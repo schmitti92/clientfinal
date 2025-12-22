@@ -10,8 +10,7 @@
   const endBtn  = $("endBtn");
   const skipBtn = $("skipBtn");
   const resetBtn= $("resetBtn");
-  const startBtn= $("startBtn");
-  const diceEl  = $("dice");
+  const diceEl  = $("diceCube");
   const turnText= $("turnText");
   const turnDot = $("turnDot");
   const boardInfo = $("boardInfo");
@@ -92,7 +91,6 @@
   let selected=null;
   let legalMovesAll=[];
   let legalMovesByPiece=new Map();
-  let serverPieceIds={red:[], blue:[]};
   let state=null;
 
   // ===== Online =====
@@ -103,7 +101,6 @@
   let netMode="offline";    // offline | host | client
   let roomCode="";
   let clientId="";
-  let sessionToken="";
   let lastNetPlayers=[];
   let rosterById=new Map();
   let myColor=null;
@@ -145,23 +142,39 @@
       myColorEl.textContent = myColor ? PLAYER_NAME[myColor] : "–";
       myColorEl.style.color = myColor ? COLORS[myColor] : "var(--muted)";
     }
+    if(colorPickWrap){
+      colorPickWrap.style.display = (netMode!=="offline" && !myColor) ? "block" : "none";
+    }
 
-    // Server assigns color. Color picker is disabled permanently.
-    if(colorPickWrap) colorPickWrap.style.display = "none";
-
-    // Active players are always red/blue for this project.
-    if(state && state.players){
-      setPlayers(["red","blue"]);
-      state.players = ["red","blue"];
+    // Host: keep state players in sync with chosen colors
+    if(netMode==="host" && state){
+      const active = getActiveColors();
+      const prev = Array.isArray(state.players) ? state.players : [];
+      const same = prev.length===active.length && prev.every((c,i)=>c===active[i]);
+      if(!same){
+        setPlayers(active);
+        state.players = [...PLAYERS];
+        state.pieces = state.pieces || {};
+        for(const c of PLAYERS){
+          if(!state.pieces[c]) state.pieces[c] = Array.from({length:5},()=>({pos:"house"}));
+        }
+        if(!state.players.includes(state.currentPlayer)){
+          state.currentPlayer = state.players[0];
+          setPhase("need_roll");
+          state.dice=null;
+        }
+        broadcastState("snapshot");
+      }
     }
 
     if(netPlayersEl){
       if(!lastNetPlayers.length){ netPlayersEl.textContent="–"; return; }
       const parts = lastNetPlayers.map(p=>{
-        const name = p.name || "Spieler";
-        const col  = p.color ? PLAYER_NAME[p.color] : "–";
-        const host = p.isHost ? "Host" : "";
-        return `${name} ${host}${host?" ":""}· ${col}`.trim();
+        const name = p.name || p.id || "Spieler";
+        const role = p.role ? `(${p.role})` : "";
+        const col  = p.color ? `· ${PLAYER_NAME[p.color]}` : "";
+        const con  = (p.connected===false) ? " ✖" : " ✔";
+        return `${name} ${role} ${col}${con}`;
       });
       netPlayersEl.textContent = parts.join(" · ");
     }
@@ -190,72 +203,65 @@
     ws.onopen = () => {
       stopReconnect();
       setNetStatus("Verbunden – join…", true);
+      wsSend({type:"hello", room:roomCode, mode:netMode, clientId, ts:Date.now()});
+      wsSend({type:"join", room:roomCode, role:netMode, clientId, name:(netMode==="host"?"Host":"Client"), ts:Date.now()});
+      wsSend({type:"need_snapshot", room:roomCode, clientId, ts:Date.now()});
+      wsSend({type:"need_state", room:roomCode, clientId, ts:Date.now()});
 
-      // Server assigns clientId via 'hello'; join can be sent immediately.
-      wsSend({
-        type: "join",
-        room: roomCode,
-        name: (netMode==="host" ? "Host" : "Spieler"),
-        asHost: (netMode==="host"),
-        sessionToken
-      });
+      if(netMode==="host") setTimeout(()=>broadcastState("snapshot"), 120);
+
+      if(netMode==="client" && pendingIntents.length){
+        const copy=[...pendingIntents]; pendingIntents=[];
+        for(const it of copy) wsSend(it);
+      }
     };
 
     ws.onmessage = (ev) => {
       const msg = (typeof ev.data==="string") ? safeJsonParse(ev.data) : null;
       if(!msg) return;
-      const type = msg.type || msg.t || msg.kind;
+      const type = msg.type || msg.t || msg.action || msg.kind;
 
-      if(type==="hello"){
-        if(msg.clientId) clientId = String(msg.clientId);
+      if(type==="players" || type==="roster" || type==="presence"){
+        setNetPlayers(msg.players || msg.list || msg.payload || []);
         return;
       }
-      if(type==="pong") return;
-
-      if(type==="room_update" || type==="room"){
-        if(msg.room) setRoomCode(msg.room);
+      if(type==="room" || type==="joined"){
+        if(msg.room) roomCode = normalizeRoomCode(msg.room);
         if(roomCodeInp) roomCodeInp.value = roomCode;
         if(msg.players) setNetPlayers(msg.players);
-        if(typeof msg.canStart==="boolean") lastCanStart = msg.canStart;
-
-        // Host can start when 2 players are colored and game not started
-        if(startBtn){
-          const started = !!(state && (state.started || state.winner!==null) && (state.dice!==undefined || state.phase));
-          startBtn.disabled = !(netMode==="host" && !!msg.canStart) || !!(state && state.started);
-        }
         setNetStatus("Verbunden", true);
         return;
       }
-
-      if(type==="started"){
-        const st = msg.state;
-        if(st) applyRemoteState(st);
-        return;
-      }
-
-      if(type==="snapshot" || type==="state" || type==="sync" || type==="roll" || type==="move"){
+      if(type==="snapshot" || type==="state" || type==="sync"){
         const st = msg.state || msg.payload || msg.data;
         if(st) applyRemoteState(st);
         if(msg.players) setNetPlayers(msg.players);
         return;
       }
-
-      if(type==="error"){
-        toast(msg.message || msg.code || "Fehler");
+      if(type==="intent"){
+        if(netMode!=="host") return;
+        const it = msg.intent || msg.payload || msg.data || msg;
+        const sender = msg.clientId || msg.id || msg.from || "";
+        if(it) handleRemoteIntent(it, sender);
         return;
       }
+      if(type==="colorDenied"){ toast(msg.reason || "Farbe belegt"); return; }
+      if(type==="colorChosen"){ toast(`Farbe: ${PLAYER_NAME[msg.color]}`); return; }
+      if(type==="need_snapshot" || type==="need_state"){
+        if(netMode==="host") broadcastState("snapshot");
+        return;
+      }
+      if(type==="ping"){ wsSend({type:"pong", ts:Date.now()}); return; }
     };
 
-    ws.onerror = () => {
-      setNetStatus("Verbindungsfehler", false);
-    };
+    ws.onerror = () => { setNetStatus("Fehler – Reconnect…", false); };
     ws.onclose = () => {
-      setNetStatus("Verbindung getrennt", false);
-      scheduleReconnect();
+      setNetStatus("Getrennt – Reconnect…", false);
+      if(netMode!=="offline") scheduleReconnect();
     };
   }
 
-function disconnectWS(){
+  function disconnectWS(){
     stopReconnect();
     if(ws){
       try{ ws.onopen=ws.onmessage=ws.onerror=ws.onclose=null; ws.close(); }catch(_e){}
@@ -268,19 +274,17 @@ function disconnectWS(){
     try{
       localStorage.setItem("barikade_room", roomCode||"");
       localStorage.setItem("barikade_mode", netMode||"offline");
-      localStorage.setItem("barikade_sessionToken", sessionToken||"");
+      localStorage.setItem("barikade_clientId", clientId||"");
     }catch(_e){}
   }
   function loadSession(){
     try{
       return {
-        room: localStorage.getItem("barikade_room")||"",
-        mode: localStorage.getItem("barikade_mode")||"offline",
-        sessionToken: localStorage.getItem("barikade_sessionToken")||""
+        r: localStorage.getItem("barikade_room")||"",
+        m: localStorage.getItem("barikade_mode")||"offline",
+        id: localStorage.getItem("barikade_clientId")||""
       };
-    }catch(_e){
-      return {room:"", mode:"offline", sessionToken:""};
-    }
+    }catch(_e){ return {r:"", m:"offline", id:""}; }
   }
 
   function chooseColor(color){
@@ -303,57 +307,11 @@ function disconnectWS(){
     return colors.length>=2 ? colors : ["red","blue"];
   }
 
+  // ===== State sync =====
   function applyRemoteState(remote){
-    const raw = (typeof remote==="string") ? safeJsonParse(remote) : remote;
-    if(!raw || typeof raw!=="object") return;
+    const st = (typeof remote==="string") ? safeJsonParse(remote) : remote;
+    if(!st || typeof st!=="object") return;
 
-    // --- Server authoritative format (server.js) ---
-    // { started, paused, turnColor, phase, rolled, pieces:[{id,label,color,posKind,houseId,nodeId}], barricades:[nodeId...] }
-    if(raw.turnColor && Array.isArray(raw.pieces)){
-      const st = {
-        players: ["red","blue"],
-        currentPlayer: raw.turnColor,
-        dice: (raw.rolled==null ? null : raw.rolled),
-        phase: (raw.phase==="place_barricade" ? "placing_barricade" : raw.phase),
-        placingChoices: [],
-        pieces: { red: Array.from({length:5},()=>({pos:"house"})),
-                 blue: Array.from({length:5},()=>({pos:"house"})) },
-        barricades: new Set(Array.isArray(raw.barricades) ? raw.barricades : []),
-        winner: null,
-        started: !!raw.started,
-        paused: !!raw.paused
-      };
-
-      // Map server piece ids + positions
-      serverPieceIds = {red:[], blue:[]};
-      for(const p of raw.pieces){
-        if(!p || (p.color!=="red" && p.color!=="blue")) continue;
-        const idx = Math.max(1, Number(p.label||1)) - 1;
-        if(idx<0 || idx>=5) continue;
-        serverPieceIds[p.color][idx] = p.id;
-
-        if(p.posKind==="board" && p.nodeId){
-          st.pieces[p.color][idx] = {pos: String(p.nodeId)};
-        }else{
-          // keep as house
-          st.pieces[p.color][idx] = {pos: "house"};
-        }
-      }
-
-      state = st;
-      setPlayers(["red","blue"]);
-      phase = st.phase || "need_roll";
-      placingChoices = [];
-      selected = null;
-      legalMovesAll = [];
-      legalMovesByPiece = new Map();
-      updateTurnUI();
-      draw();
-      return;
-    }
-
-    // --- Legacy/local format (offline or old host-sync) ---
-    const st = raw;
     if(st.barricades && Array.isArray(st.barricades)) st.barricades = new Set(st.barricades);
     state = st;
 
@@ -365,13 +323,26 @@ function disconnectWS(){
     placingChoices = Array.isArray(st.placingChoices) ? st.placingChoices : [];
 
     if(phase==="need_move" && st.dice!=null && !st.winner){
-      // Keep offline helper computation as-is
-      computeLegals();
+      legalMovesAll = computeLegalMoves(st.currentPlayer, st.dice);
+      legalMovesByPiece = new Map();
+      for(const m of legalMovesAll){
+        const idx = m.piece.index;
+        if(!legalMovesByPiece.has(idx)) legalMovesByPiece.set(idx, []);
+        legalMovesByPiece.get(idx).push(m);
+      }
+      legalTargets = legalMovesAll;
     }else{
-      legalMovesAll=[]; legalMovesByPiece=new Map();
+      legalTargets = [];
+      legalMovesAll = [];
+      legalMovesByPiece = new Map();
+      if(phase!=="placing_barricade") selected=null;
     }
 
-    updateTurnUI(); draw();
+    if(barrInfo) barrInfo.textContent = String(state.barricades?.size ?? 0);
+    if(diceEl){
+      const v = (state.dice==null) ? 0 : Number(state.dice);
+      diceEl.dataset.face = String((v>=1 && v<=6) ? v : 0);
+    }
     updateTurnUI(); draw();
   }
 
@@ -467,7 +438,7 @@ function disconnectWS(){
 
     if(barrInfo) barrInfo.textContent=String(state.barricades.size);
     setPhase("need_roll");
-    diceEl.textContent="–";
+    /* dice handled via data-face */
     legalTargets=[]; setPlacingChoices([]);
     selected=null; legalMovesAll=[]; legalMovesByPiece=new Map();
     updateTurnUI(); draw();
@@ -491,7 +462,7 @@ function disconnectWS(){
   function endTurn(){
     if(state && state.dice === 6 && !state.winner){
       state.dice = null;
-      diceEl.textContent="–";
+      /* dice handled via data-face */
       legalTargets=[]; setPlacingChoices([]);
       selected=null; legalMovesAll=[]; legalMovesByPiece=new Map();
       setPhase("need_roll");
@@ -507,7 +478,7 @@ function disconnectWS(){
     const idx = order.indexOf(state.currentPlayer);
     state.currentPlayer = order[(idx+1)%order.length];
     state.dice=null;
-    diceEl.textContent="–";
+    /* dice handled via data-face */
     legalTargets=[]; setPlacingChoices([]);
     selected=null; legalMovesAll=[]; legalMovesByPiece=new Map();
     setPhase("need_roll");
@@ -517,7 +488,7 @@ function disconnectWS(){
   function rollDice(){
     if(phase!=="need_roll") return;
     state.dice = 1 + Math.floor(Math.random()*6);
-    diceEl.textContent=String(state.dice);
+    /* dice handled via data-face */
     toast(`Wurf: ${state.dice}`);
 
     legalMovesAll = computeLegalMoves(state.currentPlayer, state.dice);
@@ -903,34 +874,29 @@ function disconnectWS(){
 
     const isMyTurn = (netMode!=="client") || (myColor && myColor===state.currentPlayer);
     if(netMode==="client" && (!myColor || !isMyTurn) && (phase==="placing_barricade" || phase==="need_move" || phase==="need_roll")){
-      toast(!myColor ? "Warte auf Farbzuweisung…" : "Du bist nicht dran");
+      toast(!myColor ? "Bitte Farbe wählen" : "Du bist nicht dran");
       return;
     }
 
     if(phase==="placing_barricade" && hit && hit.kind==="board"){
-      if(netMode!=="offline"){
-        wsSend({type:"place_barricade", nodeId: hit.id});
-        return;
-      }
+      if(netMode==="client"){ sendIntent({type:"placeBarricade", nodeId: hit.id}); return; }
       placeBarricade(hit.id);
+      if(netMode==="host") broadcastState("state");
       return;
     }
 
     if(phase==="need_move"){
       if(trySelectAtNode(hit)) { draw(); return; }
       if(selected && hit && hit.kind==="board"){
-        // Neutral client: send target to server; server validates.
-        if(netMode!=="offline"){
-          const pid = (selected.color && serverPieceIds[selected.color]) ? serverPieceIds[selected.color][selected.index] : null;
-          if(!pid){ toast("Piece-ID fehlt (warte auf Server-Sync)"); return; }
-          wsSend({type:"move_request", pieceId: pid, targetId: hit.id});
-          return;
-        }
-
-        // Offline uses local legality checking
         const list = legalMovesByPiece.get(selected.index) || [];
         const m = list.find(x => x.toId===hit.id);
-        if(m){ movePiece(m); draw(); return; }
+        if(m){
+          if(netMode==="client"){ sendIntent({type:"move", pieceIndex: selected.index, toId: hit.id}); return; }
+          movePiece(m);
+          if(netMode==="host") broadcastState("state");
+          draw();
+          return;
+        }
         toast("Ungültiges Zielfeld (bitte neu zählen)");
         return;
       }
@@ -978,77 +944,60 @@ function disconnectWS(){
 
   // ===== Buttons =====
   rollBtn.addEventListener("click", () => {
-    if(netMode!=="offline"){
-      if(!myColor){ toast("Warte auf Farbzuweisung…"); return; }
+    if(netMode==="client"){
+      if(!myColor){ toast("Bitte Farbe wählen"); return; }
       if(myColor!==state.currentPlayer){ toast("Du bist nicht dran"); return; }
-      wsSend({type:"roll_request"});
-      return;
+      sendIntent({type:"roll"}); return;
     }
     rollDice();
-    draw();
+    if(netMode==="host") broadcastState("state");
   });
-
 
   endBtn.addEventListener("click", () => {
-    if(netMode!=="offline"){
-      if(!myColor){ toast("Warte auf Farbzuweisung…"); return; }
+    if(netMode==="client"){
+      if(!myColor){ toast("Bitte Farbe wählen"); return; }
       if(myColor!==state.currentPlayer){ toast("Du bist nicht dran"); return; }
-      // Safety button: requires server support (end_turn). If server doesn't support it, nothing happens.
-      wsSend({type:"end_turn"});
-      return;
+      sendIntent({type:"end"}); return;
     }
-    endTurn();
-    draw();
+    if(phase!=="placing_barricade" && phase!=="game_over") nextPlayer();
+    if(netMode==="host") broadcastState("state");
   });
-
 
   if(skipBtn) skipBtn.addEventListener("click", () => {
-    if(netMode!=="offline"){
-      if(!myColor){ toast("Warte auf Farbzuweisung…"); return; }
+    if(netMode==="client"){
+      if(!myColor){ toast("Bitte Farbe wählen"); return; }
       if(myColor!==state.currentPlayer){ toast("Du bist nicht dran"); return; }
-      wsSend({type:"skip_turn"});
-      return;
+      sendIntent({type:"skip"}); return;
     }
-    skipTurn();
-    draw();
+    if(phase!=="placing_barricade" && phase!=="game_over"){ toast("Runde ausgesetzt"); nextPlayer(); }
+    if(netMode==="host") broadcastState("state");
   });
-
 
   resetBtn.addEventListener("click", () => {
-    if(netMode!=="offline"){
-      if(netMode!=="host"){ toast("Nur Host kann resetten"); return; }
-      wsSend({type:"reset"});
-      return;
-    }
+    if(netMode==="client"){ toast("Nur Host kann resetten"); return; }
     newGame();
+    if(netMode==="host") broadcastState("snapshot");
   });
-
 
   // Online actions
   hostBtn.addEventListener("click", () => {
     netMode = "host";
+    clientId = clientId || ("H-" + randId(8));
     roomCode = normalizeRoomCode(roomCodeInp.value) || randId(6);
     roomCodeInp.value = roomCode;
-    sessionToken = sessionToken || ("S-" + randId(18));
     saveSession();
     connectWS();
     toast("Host gestartet – teile den Raumcode");
   });
 
-
   joinBtn.addEventListener("click", () => {
     netMode = "client";
+    clientId = clientId || ("C-" + randId(8));
     roomCode = normalizeRoomCode(roomCodeInp.value);
     if(!roomCode){ toast("Bitte Raumcode eingeben"); return; }
-    sessionToken = sessionToken || ("S-" + randId(18));
     saveSession();
     connectWS();
     toast("Beitreten…");
-  });
-
-  if(startBtn) startBtn.addEventListener("click", () => {
-    if(netMode!=="host"){ toast("Nur Host kann starten"); return; }
-    wsSend({type:"start"});
   });
 
   leaveBtn.addEventListener("click", () => {
@@ -1125,11 +1074,6 @@ function disconnectWS(){
       board = await loadBoard();
       buildGraph();
       resize();
-      window.addEventListener('resize', ()=>resize());
-      window.addEventListener('orientationchange', ()=>resize());
-      // Samsung/Android toolbar jitter fix
-      setTimeout(()=>resize(), 200);
-      setTimeout(()=>resize(), 700);
 
       // auto center
       const xs = board.nodes.map(n=>n.x), ys=board.nodes.map(n=>n.y);
@@ -1144,19 +1088,16 @@ function disconnectWS(){
       view.y = (rect.height/2)/view.s - cy;
 
       const sess = loadSession();
-      roomCode = normalizeRoomCode(sess.room||"");
-      if(roomCodeInp) roomCodeInp.value = roomCode;
-      netMode = (sess.mode==="host" || sess.mode==="client") ? sess.mode : "offline";
-      sessionToken = sess.sessionToken || ("S-" + randId(18));
-      saveSession();
-
-      // Always start offline local state; online state will come from server after Start.
-      newGame();
-      toast("Bereit. Online: Host/Beitreten (Farbe vergibt der Server).");
-      if(netMode==="host" || netMode==="client"){
+      clientId = sess.id || "";
+      if(sess.r){ roomCode = normalizeRoomCode(sess.r); roomCodeInp.value = roomCode; }
+      if(sess.m==="host" || sess.m==="client"){
+        netMode = sess.m;
         setNetStatus("Reconnect…", false);
         connectWS();
       }
+
+      newGame();
+      toast("Bereit. Online: Host/Beitreten + Farbe wählen.");
     }catch(err){
       showOverlay("Fehler","Board konnte nicht geladen werden", String(err.message||err));
       console.error(err);
