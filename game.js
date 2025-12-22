@@ -283,10 +283,6 @@ function disconnectWS(){
     }
   }
 
-;
-    }catch(_e){ return {r:"", m:"offline", id:""}; }
-  }
-
   function chooseColor(color){
     if(netMode==="offline"){ toast("Offline: Farbe egal"); return; }
     if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
