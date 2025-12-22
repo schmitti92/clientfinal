@@ -5,8 +5,6 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Barikade</title>
   <link rel="stylesheet" href="styles.css" />
-  <style>
-    </style>
 </head>
 <body>
   <div class="app">
@@ -22,7 +20,19 @@
       <div class="topControls">
         <div class="turnPill"><span id="turnDot" class="dot"></span><span id="turnText">–</span></div>
         <button id="rollBtn" class="btn">Würfeln</button>
-        <div class="dicePill"><span id="dice">–</span></div>
+        <div class="dicePill">
+          <div id="diceCube" data-face="0">
+            <div class="dip p1"><span class="pip"></span></div>
+            <div class="dip p2"><span class="pip"></span></div>
+            <div class="dip p3"><span class="pip"></span></div>
+            <div class="dip p4"><span class="pip"></span></div>
+            <div class="dip p5"><span class="pip"></span></div>
+            <div class="dip p6"><span class="pip"></span></div>
+            <div class="dip p7"><span class="pip"></span></div>
+            <div class="dip p8"><span class="pip"></span></div>
+            <div class="dip p9"><span class="pip"></span></div>
+          </div>
+        </div>
         <button id="endBtn" class="btn">Zug beenden</button>
         <button id="skipBtn" class="btn">Runde aussetzen</button>
         <button id="resetBtn" class="btn">Reset</button>
@@ -52,7 +62,6 @@
           <div class="row">
             <button id="hostBtn" class="btn">Host</button>
             <button id="joinBtn" class="btn">Beitreten</button>
-            <button id="startBtn" class="btn">Start</button>
             <button id="leaveBtn" class="btn">Trennen</button>
           </div>
 
