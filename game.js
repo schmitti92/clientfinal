@@ -74,7 +74,7 @@
   let goalNodeId=null, startNodeId={red:null,blue:null,green:null,yellow:null};
 
   // Camera
-  let dpr=1, view={x:40,y:40,s:1};
+  let dpr=1, view={x:40,y:40,s:1,_fittedOnce:false};
   let pointerMap=new Map(), isPanning=false, panStart=null;
 
   // ===== Game state =====
@@ -197,7 +197,9 @@
     if(ws && (ws.readyState===0 || ws.readyState===1)) return;
 
     setNetStatus("Verbinden…", false);
-    try{ ws = new WebSocket(SERVER_URL); }
+    
+    view._fittedOnce = false;
+try{ ws = new WebSocket(SERVER_URL); }
     catch(_e){ setNetStatus("WebSocket nicht möglich", false); scheduleReconnect(); return; }
 
     ws.onopen = () => {
@@ -367,6 +369,7 @@
       legalMovesByPiece = new Map();
       placingChoices = [];
       updateTurnUI(); draw();
+      ensureFittedOnce();
       return;
     }
 
@@ -402,6 +405,7 @@
       diceEl.dataset.face = String((v>=1 && v<=6) ? v : 0);
     }
     updateTurnUI(); draw();
+      ensureFittedOnce();
   }
 
   function serializeState(){
@@ -472,6 +476,51 @@
     }
     if(boardInfo) boardInfo.textContent = `${[...adj.keys()].length} Felder`;
   }
+
+  // ===== View / Fit-to-screen (Tablet / Zoom-Fix) =====
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  function computeBounds(){
+    if(!board || !Array.isArray(board.nodes) || board.nodes.length===0) return null;
+    let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+    for(const n of board.nodes){
+      if(typeof n.x!=="number" || typeof n.y!=="number") continue;
+      if(n.x<minX) minX=n.x; if(n.x>maxX) maxX=n.x;
+      if(n.y<minY) minY=n.y; if(n.y>maxY) maxY=n.y;
+    }
+    if(!isFinite(minX)) return null;
+    return {minX,maxX,minY,maxY};
+  }
+
+  function fitBoardToView(){
+    const b = computeBounds();
+    if(!b) return;
+    const rect = canvas.getBoundingClientRect();
+    const vw = rect.width, vh = rect.height;
+    if(vw < 20 || vh < 20) return;
+
+    const pad = 70; // world units
+    const minX = b.minX - pad, maxX = b.maxX + pad;
+    const minY = b.minY - pad, maxY = b.maxY + pad;
+    const bw = (maxX - minX);
+    const bh = (maxY - minY);
+
+    const s = Math.min(vw / bw, vh / bh);
+    view.s = clamp(s, 0.28, 3.2);
+
+    const leftPx = (vw - bw * view.s) / 2;
+    const topPx  = (vh - bh * view.s) / 2;
+    view.x = (leftPx / view.s) - minX;
+    view.y = (topPx  / view.s) - minY;
+  }
+
+  function ensureFittedOnce(){
+    if(view._fittedOnce) return;
+    fitBoardToView();
+    view._fittedOnce = true;
+    draw();
+  }
+
 
   function newGame(){
     const active = getActiveColors();
@@ -1162,9 +1211,10 @@
         setNetStatus("Reconnect…", false);
         connectWS();
       }
-
-      newGame();
-      toast("Bereit. Online: Host/Beitreten + Farbe wählen.");
+      if(netMode==="offline"){
+        newGame();
+      }
+      toast("Bereit. Online: Host/Beitreten.");
     }catch(err){
       showOverlay("Fehler","Board konnte nicht geladen werden", String(err.message||err));
       console.error(err);
