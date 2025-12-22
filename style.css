@@ -322,3 +322,145 @@ body{
   .dice.dice2d{ width:52px; height:52px; border-radius:16px; padding:8px; gap:6px; }
   .dice.dice2d .pip{ width:9px; height:9px; }
 }
+/* =========================================================
+   Phase-2 Online: TEST13-LOOK BRIDGE (nur Optik)
+   ========================================================= */
+
+/* Header (.top) wie test13 .topbar */
+.top{
+  position:sticky; top:0; z-index:10;
+  display:flex; gap:10px; align-items:center; justify-content:space-between;
+  padding:10px 12px;
+  background: rgba(10,13,20,.85);
+  border-bottom:1px solid rgba(255,255,255,.06);
+  backdrop-filter: blur(10px);
+}
+
+/* Layout (.wrap) wie test13 .main */
+.wrap{
+  display:grid;
+  grid-template-columns: 1fr 320px;
+  gap:5px;
+  padding:12px;
+}
+
+/* Board-Panel wie test13 .stage */
+.boardPane{
+  position:relative;
+  background: rgba(255,255,255,.03);
+  border:1px solid rgba(255,255,255,.06);
+  border-radius:18px;
+  overflow:hidden;
+  min-height:520px;
+}
+
+/* Canvas Größe wie test13 #boardCanvas */
+#board{
+  width:100%;
+  height: calc(100vh - 86px);
+  display:block;
+}
+
+/* Hint optisch wie test13 (Overlay) */
+.boardPane .hint{
+  position:absolute;
+  left:12px; top:12px;
+  padding:6px 10px;
+  border-radius:12px;
+  background: rgba(10,13,20,.55);
+  border:1px solid rgba(255,255,255,.08);
+  backdrop-filter: blur(10px);
+  font-size:12px;
+  color:var(--muted);
+}
+
+/* Sidebar wie test13 .side */
+.side{
+  background: rgba(255,255,255,.03);
+  border:1px solid rgba(255,255,255,.06);
+  border-radius:18px;
+  padding:12px;
+  height: calc(100vh - 86px);
+  overflow:auto;
+}
+
+/* Cards im test13 Panel-Look */
+.card{
+  background: rgba(0,0,0,.18);
+  border:1px solid rgba(255,255,255,.06);
+  border-radius:14px;
+  padding:10px;
+  margin-bottom:12px;
+}
+.cardTitle{
+  margin:6px 0 8px;
+  font-size:14px;
+  color:#dbe4ff;
+  font-weight:800;
+}
+
+/* Reihen/Inputs wie test13 */
+.row{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  padding:6px 0;
+  border-bottom:1px solid rgba(255,255,255,.04);
+}
+.row:last-child{border-bottom:none}
+.label{ color:var(--muted); font-size:12px; }
+.input{
+  width:100%;
+  border:1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.04);
+  color:var(--text);
+  padding:10px 12px;
+  border-radius:12px;
+  outline:none;
+}
+.input:focus{
+  border-color: rgba(77,163,255,.35);
+  box-shadow: 0 0 0 3px rgba(77,163,255,.10);
+}
+.mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace; }
+
+/* Buttons minimal wie test13 */
+.btn{
+  border:1px solid rgba(255,255,255,.10);
+  background: linear-gradient(180deg, var(--btn2), var(--btn));
+  color:var(--text);
+  padding:10px 12px;
+  border-radius:12px;
+  cursor:pointer;
+  font-weight:700;
+}
+.btn:hover{filter:brightness(1.05)}
+.btn:active{transform:translateY(1px)}
+.btn.primary{
+  border-color: rgba(77,163,255,.35);
+  box-shadow: 0 12px 30px rgba(77,163,255,.12);
+}
+.btn.ghost{
+  background: rgba(255,255,255,.03);
+}
+
+/* Dice row optisch näher an test13 */
+.diceRow{
+  display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:flex-end;
+}
+.turnPill{
+  display:inline-block;
+  padding:6px 10px;
+  border-radius:999px;
+  font-weight:800;
+  border:1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.06);
+  color:var(--muted);
+}
+
+/* Mobile: Sidebar unter Board */
+@media (max-width: 980px){
+  .wrap{ grid-template-columns:1fr; }
+  .side{ height:auto; }
+  #board{ height: 70vh; }
+}
