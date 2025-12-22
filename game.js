@@ -289,22 +289,26 @@ function disconnectWS(){
     wsSend({type:"chooseColor", room:roomCode, clientId, color, ts:Date.now()});
   }
 
-  function getActiveColors(){
-    if(netMode==="offline") return [...PLAYERS];
-    const order=["red","blue","green","yellow"];
-    const colors=[], seen=new Set();
-    for(const p of lastNetPlayers){
-      if(!p || !p.color) continue;
-      if(seen.has(p.color)) continue;
-      seen.add(p.color);
-      colors.push(p.color);
-    }
-    colors.sort((a,b)=>order.indexOf(a)-order.indexOf(b));
-    return colors.length>=2 ? colors : ["red","blufunction applyRemoteState(remote){
-    const raw = (typeof remote==="string") ? safeJsonParse(remote) : remote;
-    if(!raw || typeof raw!=="object") return;
+function getActiveColors(){
+  if(netMode==="offline") return [...PLAYERS];
+  const order=["red","blue","green","yellow"];
+  const colors=[], seen=new Set();
+  for(const p of lastNetPlayers){
+    if(!p || !p.color) continue;
+    if(seen.has(p.color)) continue;
+    seen.add(p.color);
+    colors.push(p.color);
+  }
+  colors.sort((a,b)=>order.indexOf(a)-order.indexOf(b));
+  return colors.length>=2 ? colors : ["red","blue"];
+}
 
-    // --- Server authoritative format (server.js) ---
+function applyRemoteState(remote){
+  const raw = (typeof remote==="string") ? safeJsonParse(remote) : remote;
+  if(!raw || typeof raw!=="object") return;
+  // ... ab hier bleibt DEIN restlicher Code wie er ist
+    }
+  // --- Server authoritative format (server.js) ---
     // { started, paused, turnColor, phase, rolled, pieces:[{id,label,color,posKind,houseId,nodeId}], barricades:[nodeId...] }
     if(raw.turnColor && Array.isArray(raw.pieces)){
       const st = {
