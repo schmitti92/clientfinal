@@ -1191,18 +1191,6 @@ try{ ws = new WebSocket(SERVER_URL); }
       buildGraph();
       resize();
 
-      // auto center
-      const xs = board.nodes.map(n=>n.x), ys=board.nodes.map(n=>n.y);
-      const minX=Math.min(...xs), maxX=Math.max(...xs);
-      const minY=Math.min(...ys), maxY=Math.max(...ys);
-      const cx=(minX+maxX)/2, cy=(minY+maxY)/2;
-      const rect = canvas.getBoundingClientRect();
-      const bw=(maxX-minX)+200, bh=(maxY-minY)+200;
-      const sx=rect.width/Math.max(200,bw), sy=rect.height/Math.max(200,bh);
-      view.s = Math.max(0.35, Math.min(1.4, Math.min(sx,sy)));
-      view.x = (rect.width/2)/view.s - cx;
-      view.y = (rect.height/2)/view.s - cy;
-
       const sess = loadSession();
       clientId = sess.id || "";
       if(sess.r){ roomCode = normalizeRoomCode(sess.r); roomCodeInp.value = roomCode; }
