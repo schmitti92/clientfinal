@@ -75,6 +75,8 @@
 
   // Camera
   let dpr=1, view={x:40,y:40,s:1,_fittedOnce:false};
+
+  const AUTO_CENTER_ALWAYS = true; // immer beim Start zentrieren (überschreibt gespeicherte Ansicht)
   let pointerMap=new Map(), isPanning=false, panStart=null;
 
   // ===== View persistence (Tablet-safe) =====
@@ -1248,11 +1250,17 @@ try{ ws = new WebSocket(SERVER_URL); }
       buildGraph();
       resize();
 
-      // restore previous view if available
-      const hadSavedView = loadView();
+      // restore previous view if available (optional)
+      let hadSavedView = false;
+      if(AUTO_CENTER_ALWAYS){
+        clearView();
+        hadSavedView = false;
+      }else{
+        hadSavedView = loadView();
+      }
 
       // auto center
-      if(!hadSavedView){
+      if(AUTO_CENTER_ALWAYS || !hadSavedView){
       const xs = board.nodes.map(n=>n.x), ys=board.nodes.map(n=>n.y);
       const minX=Math.min(...xs), maxX=Math.max(...xs);
       const minY=Math.min(...ys), maxY=Math.max(...ys);
@@ -1265,6 +1273,10 @@ try{ ws = new WebSocket(SERVER_URL); }
       view.y = (rect.height/2)/view.s - cy;
 
       }
+
+      // ensure board is on-screen immediately
+      view._fittedOnce = false;
+      try{ ensureFittedOnce(); }catch(_e){}
 
       const sess = loadSession();
       clientId = sess.id || "";
