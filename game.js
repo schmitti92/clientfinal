@@ -74,8 +74,38 @@
   let goalNodeId=null, startNodeId={red:null,blue:null,green:null,yellow:null};
 
   // Camera
-  let dpr=1, view={x:40,y:40,s:1,_fittedOnce:false,_userMoved:false};
+  let dpr=1, view={x:40,y:40,s:1,_fittedOnce:false};
   let pointerMap=new Map(), isPanning=false, panStart=null;
+
+  // ===== View persistence (Tablet-safe) =====
+  const VIEW_KEY = "barikade_view_v2";
+  let lastTapTs = 0;
+  let lastTapPos = null;
+
+  function saveView(){
+    try{
+      const data = { x:view.x, y:view.y, s:view.s, ts:Date.now() };
+      localStorage.setItem(VIEW_KEY, JSON.stringify(data));
+    }catch(_e){}
+  }
+  function loadView(){
+    try{
+      const raw = localStorage.getItem(VIEW_KEY);
+      if(!raw) return false;
+      const v = JSON.parse(raw);
+      if(!v || typeof v!=="object") return false;
+      if(typeof v.x!=="number" || typeof v.y!=="number" || typeof v.s!=="number") return false;
+      // sanity
+      if(!(v.s>0.05 && v.s<20)) return false;
+      view.x = v.x; view.y = v.y; view.s = v.s;
+      view._fittedOnce = true; // we have an explicit view
+      return true;
+    }catch(_e){ return false; }
+  }
+  function clearView(){
+    try{ localStorage.removeItem(VIEW_KEY); }catch(_e){}
+    view._fittedOnce = false;
+  }
 
   // ===== Game state =====
   let phase = "need_roll";            // need_roll | need_move | placing_barricade | game_over
@@ -199,7 +229,6 @@
     setNetStatus("Verbinden…", false);
     
     view._fittedOnce = false;
-    view._userMoved = false;
 try{ ws = new WebSocket(SERVER_URL); }
     catch(_e){ setNetStatus("WebSocket nicht möglich", false); scheduleReconnect(); return; }
 
@@ -513,6 +542,7 @@ try{ ws = new WebSocket(SERVER_URL); }
     const topPx  = (vh - bh * view.s) / 2;
     view.x = (leftPx / view.s) - minX;
     view.y = (topPx  / view.s) - minY;
+    saveView();
   }
 
   function ensureFittedOnce(){
@@ -522,31 +552,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     draw();
   }
 
-
-  function scheduleFit(){
-    // Force a re-fit a few times (tablet layout settles late)
-    view._userMoved = false;
-    view._fittedOnce = false;
-    const doFit = ()=>{
-      const r = canvas.getBoundingClientRect();
-      if(!r || r.width<50 || r.height<50) return;
-      fitBoardToView();
-      draw();
-    };
-    requestAnimationFrame(()=>{
-      resize();
-      scheduleFit();
-      doFit();
-      requestAnimationFrame(()=>{
-        doFit();
-        setTimeout(doFit, 180);
-        setTimeout(doFit, 650);
-      });
-    });
-  }
-
-  window.addEventListener("orientationchange", ()=>setTimeout(scheduleFit, 120));
-  document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) setTimeout(scheduleFit, 120); });
 
   function newGame(){
     const active = getActiveColors();
@@ -575,6 +580,7 @@ try{ ws = new WebSocket(SERVER_URL); }
     legalTargets=[]; setPlacingChoices([]);
     selected=null; legalMovesAll=[]; legalMovesByPiece=new Map();
     updateTurnUI(); draw();
+    try{ ensureFittedOnce(); }catch(_e){}
   }
 
   function updateTurnUI(){
@@ -805,24 +811,20 @@ try{ ws = new WebSocket(SERVER_URL); }
   function resize(){
     dpr=Math.max(1, Math.min(2.5, window.devicePixelRatio||1));
     const r=canvas.getBoundingClientRect();
-    // On some tablets the canvas starts with 0x0 for a moment (layout not finished).
-    // Guard against that and try again shortly.
-    if(!r || r.width<50 || r.height<50){
-      requestAnimationFrame(()=>resize());
-      return;
-    }
     canvas.width=Math.floor(r.width*dpr);
     canvas.height=Math.floor(r.height*dpr);
     ctx.setTransform(dpr,0,0,dpr,0,0);
-
-    // Auto-fit ONLY until the user has moved/zoomed manually.
-    if(!view._userMoved){
-      fitBoardToView();
-      view._fittedOnce = true;
-    }
     draw();
+    // Mobile browsers report unstable canvas size during load/orientation.
+    setTimeout(()=>{ if(!view._fittedOnce) { try{ ensureFittedOnce(); }catch(_e){} } }, 80);
+
   }
   window.addEventListener("resize", resize);
+  window.addEventListener("orientationchange", ()=>{
+    // force re-fit after rotation/addressbar changes
+    view._fittedOnce = false;
+    setTimeout(()=>{ try{ resize(); ensureFittedOnce(); }catch(_e){} }, 200);
+  });
 
   function worldToScreen(p){ return {x:(p.x+view.x)*view.s, y:(p.y+view.y)*view.s}; }
   function screenToWorld(p){ return {x:p.x/view.s-view.x, y:p.y/view.s-view.y}; }
@@ -1011,6 +1013,23 @@ try{ ws = new WebSocket(SERVER_URL); }
   function onPointerDown(ev){
     canvas.setPointerCapture(ev.pointerId);
     const sp=pointerPos(ev);
+    // double-tap (or double-click) to auto-fit board (tablet safe)
+    const nowTs = Date.now();
+    if(pointerMap.size===0){
+      if(lastTapPos && (nowTs - lastTapTs) < 350){
+        const dx = sp.x - lastTapPos.x, dy = sp.y - lastTapPos.y;
+        if((dx*dx + dy*dy) < (28*28)){
+          // fit + persist
+          clearView();
+          try{ ensureFittedOnce(); }catch(_e){}
+          saveView();
+          lastTapTs = 0; lastTapPos = null;
+          return;
+        }
+      }
+      lastTapTs = nowTs;
+      lastTapPos = {x:sp.x,y:sp.y};
+    }
     pointerMap.set(ev.pointerId, {x:sp.x,y:sp.y});
     if(pointerMap.size===2){ isPanning=false; panStart=null; return; }
 
@@ -1072,7 +1091,6 @@ try{ ws = new WebSocket(SERVER_URL); }
       const d1=Math.hypot(a.x-b.x,a.y-b.y);
       const factor=d1/Math.max(10,pz.d0);
       view.s=Math.max(0.25, Math.min(3.2, pz.s0*factor));
-      view._userMoved = true;
       draw(); return;
     } else { onPointerMove._pinch=null; }
 
@@ -1081,13 +1099,12 @@ try{ ws = new WebSocket(SERVER_URL); }
       const dy=(sp.y-panStart.sy)/view.s;
       view.x=panStart.vx+dx;
       view.y=panStart.vy+dy;
-      view._userMoved = true;
       draw();
     }
   }
   function onPointerUp(ev){
     if(pointerMap.has(ev.pointerId)) pointerMap.delete(ev.pointerId);
-    if(pointerMap.size===0){ isPanning=false; panStart=null; onPointerMove._pinch=null; }
+    if(pointerMap.size===0){ isPanning=false; panStart=null; onPointerMove._pinch=null; saveView(); }
   }
 
   canvas.addEventListener("pointerdown", onPointerDown);
@@ -1231,7 +1248,11 @@ try{ ws = new WebSocket(SERVER_URL); }
       buildGraph();
       resize();
 
+      // restore previous view if available
+      const hadSavedView = loadView();
+
       // auto center
+      if(!hadSavedView){
       const xs = board.nodes.map(n=>n.x), ys=board.nodes.map(n=>n.y);
       const minX=Math.min(...xs), maxX=Math.max(...xs);
       const minY=Math.min(...ys), maxY=Math.max(...ys);
@@ -1242,6 +1263,8 @@ try{ ws = new WebSocket(SERVER_URL); }
       view.s = Math.max(0.35, Math.min(1.4, Math.min(sx,sy)));
       view.x = (rect.width/2)/view.s - cx;
       view.y = (rect.height/2)/view.s - cy;
+
+      }
 
       const sess = loadSession();
       clientId = sess.id || "";
