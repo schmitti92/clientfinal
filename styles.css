@@ -397,3 +397,40 @@ input:focus{border-color: rgba(77,163,255,.55); box-shadow: 0 0 0 2px rgba(77,16
 
 /* Server assigns colors: hide color picker */
 #colorPick{ display:none !important; }
+
+/* ================================
+   FINAL FIXES (Canvas + Tablet)
+   - stellt sicher, dass #c (Canvas) eine echte Höhe hat
+   - bessere Tablet-Bedienung (größere Touch-Flächen, stabile Layout-Höhen)
+   ================================ */
+
+.boardWrap{ min-height: 520px; } /* Fallback */
+#c{
+  width:100%;
+  height:100%;
+  display:block;
+  touch-action:none; /* Pointer-Events sauber für Pan/Zoom */
+}
+
+/* Canvas soll die komplette Board-Fläche nutzen */
+.boardWrap{ align-items:stretch; }
+.boardWrap > canvas{ flex:1; }
+
+/* Tablet/Phone: Side unter das Board, Buttons besser klickbar */
+@media (max-width: 980px){
+  .topbar{ flex-wrap:wrap; gap:10px; }
+  .topControls{ flex-wrap:wrap; gap:10px; }
+  .btn{ padding:12px 14px; border-radius:16px; }
+  .dicePill{ width:60px; height:52px; border-radius:16px; }
+  #diceCube{ width:34px; height:34px; border-radius:10px; }
+  .main{ grid-template-columns: 1fr; }
+  .boardWrap{ min-height: 68vh; }
+  .side{ padding-right:0; }
+}
+
+/* Sehr kleine Displays: noch kompakter, aber stabil */
+@media (max-width: 420px){
+  .brand{ min-width: 0; }
+  .subtitle{ display:none; }
+  .btn{ padding:11px 12px; }
+}
