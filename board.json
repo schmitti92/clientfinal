@@ -25,7 +25,7 @@
       "y": 20,
       "kind": "board",
       "flags": {
-        "run": false,
+        "run": true,
         "goal": false,
         "startColor": null,
         "noBarricade": false
