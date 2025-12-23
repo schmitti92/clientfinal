@@ -1044,12 +1044,17 @@ try{ ws = new WebSocket(SERVER_URL); }
       return;
     }
 
-    if(phase==="placing_barricade" && hit && hit.kind==="board"){
-      if(netMode==="client"){ wsSend({type:"place_barricade", nodeId: hit.id, ts:Date.now()}); return; }
-      placeBarricade(hit.id);
-      if(netMode==="host") broadcastState("state");
-      return;
-    }
+if(phase==="placing_barricade" && hit && hit.kind==="board"){
+  // ONLINE: Server entscheidet immer (Host + Client senden)
+  if(netMode!=="offline"){
+    wsSend({type:"place_barricade", nodeId: hit.id, ts:Date.now()});
+    return;
+  }
+
+  // OFFLINE: lokal platzieren
+  placeBarricade(hit.id);
+  return;
+}
 
     if(phase==="need_move"){
       if(trySelectAtNode(hit)) { draw(); return; }
