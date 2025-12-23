@@ -25,7 +25,7 @@
       "y": 20,
       "kind": "board",
       "flags": {
-        "run": true,
+        "run": false,
         "goal": false,
         "startColor": null,
         "noBarricade": false
@@ -626,18 +626,6 @@
       "kind": "board",
       "flags": {
         "run": false,
-        "goal": false,
-        "startColor": null,
-        "noBarricade": false
-      }
-    },
-    {
-      "id": "n_53",
-      "x": 360,
-      "y": 420,
-      "kind": "board",
-      "flags": {
-        "run": true,
         "goal": false,
         "startColor": null,
         "noBarricade": false
@@ -1328,18 +1316,6 @@
       }
     },
     {
-      "id": "n_111",
-      "x": 1000,
-      "y": 420,
-      "kind": "board",
-      "flags": {
-        "run": true,
-        "goal": false,
-        "startColor": null,
-        "noBarricade": false
-      }
-    },
-    {
       "id": "n_112",
       "x": 960,
       "y": 420,
@@ -1550,6 +1526,30 @@
         "houseColor": "blue",
         "houseSlot": 5
       }
+    },
+    {
+      "id": "n_113",
+      "x": 360,
+      "y": 420,
+      "kind": "board",
+      "flags": {
+        "run": true,
+        "goal": false,
+        "startColor": null,
+        "noBarricade": false
+      }
+    },
+    {
+      "id": "n_114",
+      "x": 1000,
+      "y": 420,
+      "kind": "board",
+      "flags": {
+        "run": true,
+        "goal": false,
+        "startColor": null,
+        "noBarricade": false
+      }
     }
   ],
   "edges": [
@@ -1640,10 +1640,6 @@
     [
       "n_18",
       "n_19"
-    ],
-    [
-      "n_16",
-      "n_17"
     ],
     [
       "n_15",
@@ -1806,10 +1802,6 @@
       "n_50"
     ],
     [
-      "n_50",
-      "n_51"
-    ],
-    [
       "n_51",
       "n_62"
     ],
@@ -1898,14 +1890,6 @@
       "n_103"
     ],
     [
-      "n_103",
-      "n_104"
-    ],
-    [
-      "n_104",
-      "n_105"
-    ],
-    [
       "n_105",
       "n_91"
     ],
@@ -1916,22 +1900,6 @@
     [
       "n_84",
       "n_92"
-    ],
-    [
-      "n_104",
-      "n_112"
-    ],
-    [
-      "n_111",
-      "n_112"
-    ],
-    [
-      "n_109",
-      "n_111"
-    ],
-    [
-      "n_108",
-      "n_109"
     ],
     [
       "n_107",
@@ -2018,16 +1986,56 @@
       "n_56"
     ],
     [
-      "n_53",
+      "n_51",
+      "n_52"
+    ],
+    [
+      "n_54",
       "n_55"
     ],
     [
-      "n_52",
-      "n_53"
+      "n_113",
+      "n_55"
     ],
     [
-      "n_51",
+      "n_113",
       "n_52"
+    ],
+    [
+      "n_50",
+      "n_51"
+    ],
+    [
+      "n_108",
+      "n_109"
+    ],
+    [
+      "n_109",
+      "n_110"
+    ],
+    [
+      "n_110",
+      "n_114"
+    ],
+    [
+      "n_112",
+      "n_114"
+    ],
+    [
+      "n_104",
+      "n_112"
+    ],
+    [
+      "n_104",
+      "n_105"
+    ],
+    [
+      "n_103",
+      "n_104"
+    ],
+    [
+      "n_16",
+      "n_17"
     ],
     [
       "n_17",
