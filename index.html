@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Barikade</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">B</div>
+        <div>
+          <div class="title">Barikade</div>
+          <div class="subtitle">Online • Server steuert Würfel + Züge • 2 Spieler</div>
+        </div>
+      </div>
+
+      <div class="topControls">
+        <div class="turnPill"><span id="turnDot" class="dot"></span><span id="turnText">–</span></div>
+        <button id="rollBtn" class="btn">Würfeln</button>
+</div>
+        <button id="endBtn" class="btn">Zug beenden</button>
+        <button id="skipBtn" class="btn">Runde aussetzen</button>
+        <button id="resetBtn" class="btn">Reset</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="boardWrap">
+        <canvas id="c"></canvas>
+      </section>
+
+      <aside class="side">
+        <div class="card">
+          <h3>Status</h3>
+          <div class="kv"><span>Board</span><span id="boardInfo">–</span></div>
+          <div class="kv"><span>Barikaden</span><span id="barrInfo">–</span></div>
+        </div>
+
+        <div class="card">
+          <h3>Online</h3>
+          <div class="muted">Server ist fest hinterlegt. Du brauchst nur noch einen Raumcode.</div>
+          <div class="kv"><span>Server</span><span id="serverLabel">–</span></div>
+
+          <label class="lbl">Raumcode</label>
+          <input id="roomCode" class="inp" placeholder="z.B. A7K3Q2" />
+
+          <div class="row">
+            <button id="hostBtn" class="btn">Host</button>
+            <button id="joinBtn" class="btn">Beitreten</button>
+            <button id="leaveBtn" class="btn">Trennen</button>
+          </div>
+
+          <div class="kv"><span>Status</span><span id="netStatus" class="ok">Offline</span></div>
+          <div class="kv"><span>Du bist</span><span id="myColor">–</span></div>
+          <div class="kv"><span>Aktive Spieler</span><span id="netPlayers">–</span></div>
+
+          <div id="colorPick" style="display:none;">
+            <div class="lbl">Wähle deine Farbe</div>
+            <div class="colorRow">
+              <button id="pickRed" class="btnColor">Rot</button>
+              <button id="pickBlue" class="btnColor">Blau</button>
+              <button id="pickGreen" class="btnColor">Grün</button>
+              <button id="pickYellow" class="btnColor">Gelb</button>
+            </div>
+            <div class="muted" style="margin-top:6px;">Farbe bleibt reserviert (Reconnect).</div>
+          </div>
+        </div>
+
+        <div class="card diceCard">
+          <h3>Würfel</h3>
+          <div class="diceCenter">
+            <div class="dicePill dicePillBig">
+              <div id="diceCube" data-face="0" role="button" aria-label="Würfeln" title="Würfeln">
+                <div class="dip p1"><span class="pip"></span></div>
+                <div class="dip p2"><span class="pip"></span></div>
+                <div class="dip p3"><span class="pip"></span></div>
+                <div class="dip p4"><span class="pip"></span></div>
+                <div class="dip p5"><span class="pip"></span></div>
+                <div class="dip p6"><span class="pip"></span></div>
+                <div class="dip p7"><span class="pip"></span></div>
+                <div class="dip p8"><span class="pip"></span></div>
+                <div class="dip p9"><span class="pip"></span></div>
+              </div>
+            </div>
+            <div class="muted diceHint">Tippe auf den Würfel zum Würfeln.</div>
+          </div>
+        </div>
+
+      </aside>
+    </main>
+
+    <div id="netBanner" class="netBanner"></div>
+
+    <div id="toast" class="toast"></div>
+
+    <div id="overlay" class="overlay">
+      <div class="overlayCard">
+        <div id="overlayTitle" class="overlayTitle">Hinweis</div>
+        <div id="overlaySub" class="overlaySub"></div>
+        <div id="overlayHint" class="overlayHint"></div>
+        <button id="overlayOk" class="btn">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
