@@ -577,3 +577,13 @@ input:focus{border-color: rgba(77,163,255,.55); box-shadow: 0 0 0 2px rgba(77,16
 .app{ min-height:100vh; display:flex; flex-direction:column; }
 .main{ flex:1; align-items:stretch; }
 .boardWrap{ min-height:0; }
+
+
+/* ===== Viewport-FIX: Kein Page-Scroll, Board sofort sichtbar =====
+   Ziel: Das Board bleibt im Viewport, die rechte Side-Bar scrollt intern.
+*/
+html,body{height:100%;}
+body{overflow:hidden;}
+.main{height: calc(100vh - 72px); overflow:hidden;} /* 72px ~ Topbar-Höhe */
+.boardWrap{height:100%; overflow:hidden;}
+.side{height:100%; overflow:auto;}
