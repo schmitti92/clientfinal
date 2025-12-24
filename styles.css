@@ -568,3 +568,12 @@ input:focus{border-color: rgba(77,163,255,.55); box-shadow: 0 0 0 2px rgba(77,16
 
 /* Würfel-Hinweis */
 .diceHint{ text-align:center; }
+
+
+/* ===== Layout-FIX: Board immer sauber ausgerichtet (kein Leerraum oben) =====
+   Ursache: .app ist Flex-Column, aber .main hatte kein flex:1 -> Grid nutzt nicht den verfügbaren Platz.
+   Fix: .main füllt Resthöhe, boardWrap/canvas dürfen schrumpfen und strecken.
+*/
+.app{ min-height:100vh; display:flex; flex-direction:column; }
+.main{ flex:1; align-items:stretch; }
+.boardWrap{ min-height:0; }
