@@ -587,3 +587,9 @@ body{overflow:hidden;}
 .main{height: calc(100vh - 72px); overflow:hidden;} /* 72px ~ Topbar-Höhe */
 .boardWrap{height:100%; overflow:hidden;}
 .side{height:100%; overflow:auto;}
+
+/* ===== Status-Box ausblenden ===== */
+.hideStatus{
+  display: none !important;
+}
+
