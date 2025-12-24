@@ -380,7 +380,7 @@ input:focus{border-color: rgba(77,163,255,.55); box-shadow: 0 0 0 2px rgba(77,16
   gap:3px;
   padding:4px;
 }
-#diceCube[data-face="0"]{ opacity:1; }
+#diceCube[data-face="0"]{ opacity:0.45; }
 .dip{ width:100%; height:100%; display:flex; align-items:center; justify-content:center; }
 .pip{
   width:6px; height:6px; border-radius:50%;
@@ -504,92 +504,44 @@ input:focus{border-color: rgba(77,163,255,.55); box-shadow: 0 0 0 2px rgba(77,16
 }
 
 
-/* ===== Würfel fest in der rechten Side-Bar (groß, klickbar) ===== */
-#rollBtn{ display:none !important; } /* Button bleibt funktional im Code, aber UI nutzt den Würfel */
-
-.diceCard h3{ margin-bottom: 10px; }
-.diceCenter{
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  justify-content:center;
-  gap:10px;
-  padding:8px 0 2px;
-}
-
-.dicePillBig{
-  width: 260px;
-  height: 260px;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  border-radius:18px;
-  background: rgba(0,0,0,0.18);
-  border: 1px solid rgba(255,255,255,0.08);
-}
-
-.dicePillBig #diceCube{
-  width: 210px;
-  height: 210px;
-  border-radius: 28px;
-  padding: 26px;
-  gap: 16px;
-  cursor:pointer;
-  touch-action: manipulation;
-  user-select:none;
-}
-
-.dicePillBig .pip{
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: rgba(0,0,0,0.80);
-  opacity: 0;
-  box-shadow: inset 0 2px 2px rgba(255,255,255,0.30);
-}
-
-.dicePillBig #diceCube:active{
-  transform: scale(0.985);
-}
-
-/* Tablet/kleine Screens: Würfel etwas kleiner */
-@media (max-width: 980px){
-  .dicePillBig{ width: 220px; height: 220px; }
-  .dicePillBig #diceCube{ width: 176px; height: 176px; padding: 22px; gap: 13px; border-radius: 24px; }
-  .dicePillBig .pip{ width: 18px; height: 18px; }
-}
-
-/* Sehr klein */
-@media (max-width: 420px){
-  .dicePillBig{ width: 200px; height: 200px; }
-  .dicePillBig #diceCube{ width: 160px; height: 160px; padding: 20px; gap: 12px; }
-  .dicePillBig .pip{ width: 16px; height: 16px; }
-}
-
-/* Würfel-Hinweis */
-.diceHint{ text-align:center; }
-
-
-/* ===== Layout-FIX: Board immer sauber ausgerichtet (kein Leerraum oben) =====
-   Ursache: .app ist Flex-Column, aber .main hatte kein flex:1 -> Grid nutzt nicht den verfügbaren Platz.
-   Fix: .main füllt Resthöhe, boardWrap/canvas dürfen schrumpfen und strecken.
-*/
-.app{ min-height:100vh; display:flex; flex-direction:column; }
-.main{ flex:1; align-items:stretch; }
-.boardWrap{ min-height:0; }
-
-
-/* ===== Viewport-FIX: Kein Page-Scroll, Board sofort sichtbar =====
-   Ziel: Das Board bleibt im Viewport, die rechte Side-Bar scrollt intern.
+/* ===== FINAL Viewport-FIX v2 (robust, ohne calc) =====
+   Wichtig: NICHT mit height:calc(...) arbeiten -> Board verschwindet sonst.
+   Diese Regeln überschreiben nur Höhen/Overflow, ohne dein Grid-Layout anzufassen.
 */
 html,body{height:100%;}
 body{overflow:hidden;}
-.main{height: calc(100vh - 72px); overflow:hidden;} /* 72px ~ Topbar-Höhe */
-.boardWrap{height:100%; overflow:hidden;}
-.side{height:100%; overflow:auto;}
 
-/* ===== Status-Box ausblenden ===== */
-.hideStatus{
-  display: none !important;
+.app{
+  height:100%;
+  min-height:100%;
+  display:flex;
+  flex-direction:column;
 }
 
+.topbar{flex:0 0 auto;}
+
+.main{
+  flex:1 1 auto;
+  min-height:0;
+  overflow:hidden;
+  height:auto !important; /* kill any old calc heights */
+}
+
+.boardWrap{
+  min-height:0;
+  overflow:hidden;
+}
+
+#c{
+  width:100%;
+  height:100%;
+  display:block;
+}
+
+.side{
+  min-height:0;
+  overflow:auto;
+}
+
+/* Status-Box ausblenden bleibt */
+.hideStatus{display:none !important;}
