@@ -1,25 +1,19 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-
   // ===== UI refs =====
   const canvas = $("c");
   const ctx = canvas.getContext("2d");
   const toastEl = $("toast");
   const netBannerEl = $("netBanner");
-
   const rollBtn = $("rollBtn");
   const endBtn  = $("endBtn");
   const skipBtn = $("skipBtn");
   const resetBtn= $("resetBtn");
-  const saveBtn = $("saveBtn");
-  const loadBtn = $("loadBtn");
-  const loadFile= $("loadFile");
   const diceEl  = $("diceCube");
   const turnText= $("turnText");
   const turnDot = $("turnDot");
   const boardInfo = $("boardInfo");
   const barrInfo  = $("barrInfo");
-
   // Online
   const serverLabel = $("serverLabel");
   const roomCodeInp = $("roomCode");
@@ -29,21 +23,18 @@
   const netStatus = $("netStatus");
   const netPlayersEl = $("netPlayers");
   const myColorEl = $("myColor");
-
   // Color picker
   const colorPickWrap = $("colorPick");
   const btnPickRed = $("pickRed");
   const btnPickBlue = $("pickBlue");
   const btnPickGreen = $("pickGreen");
   const btnPickYellow = $("pickYellow");
-
   // Overlay
   const overlay = $("overlay");
   const overlayTitle = $("overlayTitle");
   const overlaySub = $("overlaySub");
   const overlayHint = $("overlayHint");
   const overlayOk = $("overlayOk");
-
   const CSS = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
   const COLORS = {
     node: CSS("--node"), stroke: CSS("--stroke"),
@@ -51,10 +42,8 @@
     goal: CSS("--goal"), run: CSS("--run"),
     red: CSS("--red"), blue: CSS("--blue"), green: CSS("--green"), yellow: CSS("--yellow"),
   };
-
   const DEFAULT_PLAYERS = ["red","blue","green","yellow"];
   const PLAYER_NAME = {red:"Rot", blue:"Blau", green:"Grün", yellow:"Gelb"};
-
   let PLAYERS = ["red","blue"];
   function setPlayers(arg){
     if(Array.isArray(arg)){
@@ -72,22 +61,17 @@
     const n = Math.max(2, Math.min(4, Number(arg)||2));
     PLAYERS = DEFAULT_PLAYERS.slice(0, n);
   }
-
   // ===== Board =====
   let board=null, nodeById=new Map(), adj=new Map(), runNodes=new Set();
   let goalNodeId=null, startNodeId={red:null,blue:null,green:null,yellow:null};
-
   // Camera
   let dpr=1, view={x:40,y:40,s:1,_fittedOnce:false};
-
   const AUTO_CENTER_ALWAYS = true; // immer beim Start zentrieren (überschreibt gespeicherte Ansicht)
   let pointerMap=new Map(), isPanning=false, panStart=null;
-
   // ===== View persistence (Tablet-safe) =====
   const VIEW_KEY = "barikade_view_v2";
   let lastTapTs = 0;
   let lastTapPos = null;
-
   function saveView(){
     try{
       const data = { x:view.x, y:view.y, s:view.s, ts:Date.now() };
@@ -112,32 +96,26 @@
     try{ localStorage.removeItem(VIEW_KEY); }catch(_e){}
     view._fittedOnce = false;
   }
-
   // ===== Game state =====
   let phase = "need_roll";            // need_roll | need_move | placing_barricade | game_over
   let legalTargets = [];
   let placingChoices = [];
-
   function setPhase(p){ phase=p; if(state) state.phase=p; }
   function setPlacingChoices(arr){
     placingChoices = Array.isArray(arr) ? arr : [];
     if(state) state.placingChoices = [...placingChoices];
   }
-
   let selected=null;
   let legalMovesAll=[];
   let legalMovesByPiece=new Map();
   let state=null;
-
   // ===== FX (safe, visual only) =====
   let lastDiceFace = 0;
   let lastMoveFx = null;
   let moveGhostFx = null;
-
   // ===== Online =====
   const SERVER_URL = "wss://serverfinal-9t39.onrender.com";
   if(serverLabel) serverLabel.textContent = SERVER_URL;
-
   let ws=null;
   let netMode="offline";    // offline | host | client
   let roomCode="";
@@ -145,15 +123,9 @@
   let lastNetPlayers=[];
   let rosterById=new Map();
   let myColor=null;
-
-  // Merker: läuft auf dem Server bereits ein Spiel?
-  // (Wichtig gegen Reconnect-Reset durch Auto-Start)
-  let remoteGameStarted = false;
-
   let reconnectTimer=null;
   let reconnectAttempt=0;
   let pendingIntents=[];
-
   function randId(len=10){
     const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let s=""; for(let i=0;i<len;i++) s += chars[Math.floor(Math.random()*chars.length)];
@@ -163,70 +135,21 @@
     return (s||"").toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,10);
   }
   function safeJsonParse(s){ try{ return JSON.parse(s); }catch(_e){ return null; } }
-
-  // ===== Save/Load helpers (Download/Upload JSON) =====
-  function tsFilename(prefix, ext="json"){
-    const d = new Date();
-    const pad = (n) => String(n).padStart(2,"0");
-    const name = `${prefix}_${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}.${ext}`;
-    return name.replace(/[^a-zA-Z0-9_.-]/g, "_");
-  }
-
-  function downloadText(filename, text, mime="application/json"){
-    try{
-      const blob = new Blob([text], {type:mime});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(()=>URL.revokeObjectURL(url), 1000);
-    }catch(_e){
-      toast("Download fehlgeschlagen");
-    }
-  }
-
-  function serializeLocalState(){
-    if(!state) return null;
-    // Kopie + Sets in Arrays umwandeln
-    const st = JSON.parse(JSON.stringify(state, (key, val)=>{
-      if(val instanceof Set) return Array.from(val);
-      return val;
-    }));
-    // barricades ist bei uns oft Set
-    if(state.barricades instanceof Set) st.barricades = Array.from(state.barricades);
-    return st;
-  }
-
-  function handleSaveDownload(saveObj){
-    const prefix = `barikade_save_${(saveObj?.room || roomCode || "room")}`;
-    const filename = tsFilename(prefix, "json");
-    const text = JSON.stringify(saveObj, null, 2);
-    downloadText(filename, text, "application/json");
-    toast("Spielstand gespeichert (Download)");
-  }
-
   function setNetStatus(text, good){
     if(!netStatus) return;
     netStatus.textContent = text;
     netStatus.style.color = good ? "var(--green)" : "var(--muted)";
   }
-
   function wsSend(obj){
     if(!ws || ws.readyState!==1) return false;
     try{ ws.send(JSON.stringify(obj)); return true; }catch(_e){ return false; }
   }
-
   function setNetPlayers(list){
     lastNetPlayers = Array.isArray(list) ? list : [];
     rosterById = new Map();
     for(const p of lastNetPlayers){ if(p && p.id) rosterById.set(p.id, p); }
-
     const me = rosterById.get(clientId);
     myColor = (me && me.color) ? me.color : null;
-
     if(myColorEl){
       myColorEl.textContent = myColor ? PLAYER_NAME[myColor] : "–";
       myColorEl.style.color = myColor ? COLORS[myColor] : "var(--muted)";
@@ -234,7 +157,6 @@
     if(colorPickWrap){
       colorPickWrap.style.display = (netMode!=="offline" && !myColor) ? "block" : "none";
     }
-
     // Host: keep state players in sync with chosen colors
     if(netMode==="host" && state){
       const active = getActiveColors();
@@ -255,7 +177,6 @@
         broadcastState("snapshot");
       }
     }
-
     if(netPlayersEl){
       if(!lastNetPlayers.length){ netPlayersEl.textContent="–"; return; }
       const parts = lastNetPlayers.map(p=>{
@@ -268,7 +189,6 @@
       netPlayersEl.textContent = parts.join(" · ");
     }
   }
-
   function scheduleReconnect(){
     if(reconnectTimer) return;
     reconnectAttempt++;
@@ -280,22 +200,18 @@
     if(reconnectTimer){ clearTimeout(reconnectTimer); reconnectTimer=null; }
     reconnectAttempt = 0;
   }
-
   function connectWS(){
     if(!roomCode) return;
     if(ws && (ws.readyState===0 || ws.readyState===1)) return;
-
     setNetStatus("Verbinden…", false);
     
     view._fittedOnce = false;
 try{ ws = new WebSocket(SERVER_URL); }
     catch(_e){ setNetStatus("WebSocket nicht möglich", false); scheduleReconnect(); return; }
-
     ws.onopen = () => {
       stopReconnect();
       hideNetBanner();
       setNetStatus("Verbunden – join…", true);
-
       const sessionToken = getSessionToken();
       wsSend({
         type: "join",
@@ -306,12 +222,10 @@ try{ ws = new WebSocket(SERVER_URL); }
         ts: Date.now()
       });
     };
-
     ws.onmessage = (ev) => {
       const msg = (typeof ev.data==="string") ? safeJsonParse(ev.data) : null;
       if(!msg) return;
       const type = msg.type;
-
       if(type==="hello"){
         if(msg.clientId) clientId = msg.clientId;
         return;
@@ -319,9 +233,7 @@ try{ ws = new WebSocket(SERVER_URL); }
       if(type==="room_update"){
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
         // Auto-start when host and 2 players present
-        // Wichtig: nur starten, wenn noch KEIN laufendes Spiel auf dem Server existiert.
-        // Sonst: Host-Reconnect -> room_update(canStart=true) -> start -> Server würde neu initialisieren.
-        if(netMode==="host" && msg.canStart && !remoteGameStarted){
+        if(netMode==="host" && msg.canStart){
           wsSend({type:"start", ts:Date.now()});
         }
         return;
@@ -349,17 +261,8 @@ try{ ws = new WebSocket(SERVER_URL); }
         toast(msg.message || "Server-Fehler");
         return;
       }
-      if(type==="save_data"){
-        if(msg.save) handleSaveDownload(msg.save);
-        return;
-      }
-      if(type==="load_done"){
-        toast("Spielstand geladen.");
-        return;
-      }
       if(type==="pong") return;
     };
-
     ws.onerror = () => { setNetStatus("Fehler – Reconnect…", false); showNetBanner("Verbindungsfehler – Reconnect läuft…"); };
     ws.onclose = () => {
       setNetStatus("Getrennt – Reconnect…", false);
@@ -367,18 +270,15 @@ try{ ws = new WebSocket(SERVER_URL); }
       if(netMode!=="offline") scheduleReconnect();
     };
   }
-
   function disconnectWS(){
     stopReconnect();
     if(ws){
       try{ ws.onopen=ws.onmessage=ws.onerror=ws.onclose=null; ws.close(); }catch(_e){}
       ws=null;
     }
-    remoteGameStarted = false;
     setNetStatus("Offline", false);
     hideNetBanner();
   }
-
   function saveSession(){
     try{
       localStorage.setItem("barikade_room", roomCode||"");
@@ -395,7 +295,6 @@ try{ ws = new WebSocket(SERVER_URL); }
       };
     }catch(_e){ return {r:"", m:"offline", id:""}; }
   }
-
   // Server uses sessionToken to reconnect a "slot" (same color) after refresh.
   function getSessionToken(){
     try{
@@ -409,11 +308,9 @@ try{ ws = new WebSocket(SERVER_URL); }
       return "S-" + randId(16);
     }
   }
-
   function chooseColor(_color){
     toast("Farbe wird vom Server automatisch vergeben");
   }
-
   function getActiveColors(){
     if(netMode==="offline") return [...PLAYERS];
     const order=["red","blue","green","yellow"];
@@ -427,23 +324,19 @@ try{ ws = new WebSocket(SERVER_URL); }
     colors.sort((a,b)=>order.indexOf(a)-order.indexOf(b));
     return colors.length>=2 ? colors : ["red","blue"];
   }
-
   // ===== State sync =====
   function applyRemoteState(remote){
     const st = (typeof remote==="string") ? safeJsonParse(remote) : remote;
     if(!st || typeof st!=="object") return;
-
     // --- Server-state adapter (serverfinal protocol) ---
     // server state: {turnColor, phase, rolled, pieces:[{id,color,posKind,houseId,nodeId}], barricades:[...], goal}
     if(st.turnColor && Array.isArray(st.pieces) && Array.isArray(st.barricades)){
       const server = st;
-      remoteGameStarted = !!server.started;
       const players = ["red","blue"];
       setPlayers(players);
       const piecesByColor = {red:[], blue:[], green:[], yellow:[]};
       // ensure 5 slots per color
       for(const c of players) piecesByColor[c] = Array.from({length:5}, ()=>({pos:"house"}));
-
       for(const pc of server.pieces){
         if(!pc || (pc.color!=="red" && pc.color!=="blue")) continue;
         // pc.label is 1..5
@@ -454,7 +347,6 @@ try{ ws = new WebSocket(SERVER_URL); }
         else pos = "house";
         piecesByColor[pc.color][idx] = {pos, pieceId: pc.id};
       }
-
       state = {
         players,
         currentPlayer: server.turnColor,
@@ -466,18 +358,15 @@ try{ ws = new WebSocket(SERVER_URL); }
         winner: null,
         goalNodeId: server.goal ? String(server.goal) : goalNodeId
       };
-
       // map phases
       const ph = server.phase;
       if(ph==="need_roll") phase="need_roll";
       else if(ph==="need_move") phase="need_move";
       else if(ph==="place_barricade") phase="placing_barricade";
       else phase="need_roll";
-
       // show dice
       setDiceFaceAnimated(state.dice==null ? 0 : Number(state.dice));
       if(barrInfo) barrInfo.textContent = String(state.barricades.size);
-
       // in online mode we let the server validate moves, so don't compute legalTargets
       legalTargets = [];
       legalMovesAll = [];
@@ -487,17 +376,12 @@ try{ ws = new WebSocket(SERVER_URL); }
       ensureFittedOnce();
       return;
     }
-
     if(st.barricades && Array.isArray(st.barricades)) st.barricades = new Set(st.barricades);
     state = st;
-
     if(st.players && Array.isArray(st.players) && st.players.length>=2) setPlayers(st.players);
-
     if(typeof st.phase === "string") phase = st.phase;
     else phase = st.winner ? "game_over" : (st.dice==null ? "need_roll" : "need_move");
-
     placingChoices = Array.isArray(st.placingChoices) ? st.placingChoices : [];
-
     if(phase==="need_move" && st.dice!=null && !st.winner){
       legalMovesAll = computeLegalMoves(st.currentPlayer, st.dice);
       legalMovesByPiece = new Map();
@@ -513,13 +397,11 @@ try{ ws = new WebSocket(SERVER_URL); }
       legalMovesByPiece = new Map();
       if(phase!=="placing_barricade") selected=null;
     }
-
     if(barrInfo) barrInfo.textContent = String(state.barricades?.size ?? 0);
     setDiceFaceAnimated(state.dice==null ? 0 : Number(state.dice));
     updateTurnUI(); draw();
       ensureFittedOnce();
   }
-
   function serializeState(){
     const st = JSON.parse(JSON.stringify(state));
     if(state.barricades instanceof Set) st.barricades = Array.from(state.barricades);
@@ -528,17 +410,14 @@ try{ ws = new WebSocket(SERVER_URL); }
     st.placingChoices = Array.isArray(placingChoices) ? [...placingChoices] : [];
     return st;
   }
-
   function broadcastState(kind="state"){
     if(netMode!=="host") return;
     wsSend({type:kind, room:roomCode, state:serializeState(), ts:Date.now()});
   }
-
   function sendIntent(intent){
     const msg = {type:"intent", room:roomCode, clientId, intent, ts:Date.now()};
     if(!wsSend(msg)) pendingIntents.push(msg);
   }
-
   // ===== Game =====
   function toast(msg){
     if(!toastEl) return;
@@ -547,8 +426,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     clearTimeout(toastEl._t);
     toastEl._t=setTimeout(()=>toastEl.classList.remove("show"), 1200);
   }
-
-
   // ===== Visual helpers (safe) =====
   function showNetBanner(text){
     if(!netBannerEl) return;
@@ -559,7 +436,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     if(!netBannerEl) return;
     netBannerEl.classList.remove("show");
   }
-
   function spawnDiceParticles(){
     if(!diceEl) return;
     const host = diceEl.parentElement;
@@ -568,7 +444,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     const hostRect = host.getBoundingClientRect();
     const cx = (rect.left - hostRect.left) + rect.width/2;
     const cy = (rect.top - hostRect.top) + rect.height/2;
-
     const count = 12;
     for(let i=0;i<count;i++){
       const el = document.createElement("div");
@@ -585,7 +460,6 @@ try{ ws = new WebSocket(SERVER_URL); }
       setTimeout(()=>{ try{ el.remove(); }catch(_e){} }, 650);
     }
   }
-
   function setDiceFaceAnimated(v){
     if(!diceEl) return;
     const face = (v>=1 && v<=6) ? v : 0;
@@ -594,26 +468,21 @@ try{ ws = new WebSocket(SERVER_URL); }
       lastDiceFace = 0;
       return;
     }
-
     // avoid spamming if same face
     if(face === lastDiceFace) return;
     lastDiceFace = face;
-
     // (108) jitter before showing result
     diceEl.classList.remove("shake");
     void diceEl.offsetWidth; // restart animation
     diceEl.classList.add("shake");
-
     // (26) particles
     spawnDiceParticles();
-
     // show result slightly delayed for suspense
     setTimeout(()=>{
       if(diceEl) diceEl.dataset.face = String(face);
       if(diceEl) diceEl.classList.remove("shake");
     }, 280);
   }
-
   function parseColorFromPieceId(pieceId){
     const s = String(pieceId||"");
     // expected: p_red_1, p_blue_3 ...
@@ -623,27 +492,24 @@ try{ ws = new WebSocket(SERVER_URL); }
     if(s.includes("yellow")) return "yellow";
     return null;
   }
-
   function queueMoveFx(action){
     if(!action || !board) return;
     const path = Array.isArray(action.path) ? action.path.map(String) : [];
     if(path.length < 2) return;
     const color = parseColorFromPieceId(action.pieceId) || null;
-
     const pts=[];
     for(const id of path){
       const n = nodeById.get(String(id));
       if(!n) continue;
       const s = worldToScreen(n);
-      pts.push({x:s.x, y:s.y, id:String(id)});
+      pts.push({x:s.x, y:s.y});
     }
     if(pts.length < 2) return;
-
     const now = performance.now();
-    lastMoveFx = { color: color || "white", pts, t0: now, dur: 520 };
-    moveGhostFx = { color: color || "white", pts, t0: now, dur: 520 };
+    // visual-only FX: slower + higher hop
+    lastMoveFx = { color: color || "white", pts, t0: now, dur: 720, hop: 14 };
+    moveGhostFx = { color: color || "white", pts, t0: now, dur: 720, hop: 14 };
   }
-
   function showOverlay(title, sub, hint){
     overlayTitle.textContent=title;
     overlaySub.textContent=sub||"";
@@ -652,18 +518,15 @@ try{ ws = new WebSocket(SERVER_URL); }
   }
   function hideOverlay(){ overlay.classList.remove("show"); }
   overlayOk.addEventListener("click", hideOverlay);
-
   async function loadBoard(){
     const res = await fetch("board.json", {cache:"no-store"});
     if(!res.ok) throw new Error("board.json nicht gefunden");
     return await res.json();
   }
-
   function buildGraph(){
     nodeById.clear(); adj.clear(); runNodes.clear();
     goalNodeId=null;
     startNodeId={red:null,blue:null,green:null,yellow:null};
-
     for(const n of board.nodes){
       nodeById.set(n.id, n);
       if(n.kind==="board"){
@@ -684,10 +547,8 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
     if(boardInfo) boardInfo.textContent = `${[...adj.keys()].length} Felder`;
   }
-
   // ===== View / Fit-to-screen (Tablet / Zoom-Fix) =====
   function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
-
   function computeBounds(){
     if(!board || !Array.isArray(board.nodes) || board.nodes.length===0) return null;
     let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
@@ -699,42 +560,34 @@ try{ ws = new WebSocket(SERVER_URL); }
     if(!isFinite(minX)) return null;
     return {minX,maxX,minY,maxY};
   }
-
   function fitBoardToView(){
     const b = computeBounds();
     if(!b) return;
     const rect = canvas.getBoundingClientRect();
     const vw = rect.width, vh = rect.height;
     if(vw < 20 || vh < 20) return;
-
     const pad = 70; // world units
     const minX = b.minX - pad, maxX = b.maxX + pad;
     const minY = b.minY - pad, maxY = b.maxY + pad;
     const bw = (maxX - minX);
     const bh = (maxY - minY);
-
     const s = Math.min(vw / bw, vh / bh);
     view.s = clamp(s, 0.28, 3.2);
-
     const leftPx = (vw - bw * view.s) / 2;
     const topPx  = (vh - bh * view.s) / 2;
     view.x = (leftPx / view.s) - minX;
     view.y = (topPx  / view.s) - minY;
     saveView();
   }
-
   function ensureFittedOnce(){
     if(view._fittedOnce) return;
     fitBoardToView();
     view._fittedOnce = true;
     draw();
   }
-
-
   function newGame(){
     const active = getActiveColors();
     setPlayers(active);
-
     state={
       players:[...PLAYERS],
       currentPlayer:PLAYERS[0],
@@ -745,13 +598,11 @@ try{ ws = new WebSocket(SERVER_URL); }
       barricades:new Set(),
       winner:null
     };
-
     // 🔥 BRUTAL: Barikaden starten auf ALLEN RUN-Feldern (außer Ziel)
     for(const id of runNodes){
       if(id===goalNodeId) continue;
       state.barricades.add(id);
     }
-
     if(barrInfo) barrInfo.textContent=String(state.barricades.size);
     setPhase("need_roll");
     /* dice handled via data-face */
@@ -760,27 +611,22 @@ try{ ws = new WebSocket(SERVER_URL); }
     updateTurnUI(); draw();
     try{ ensureFittedOnce(); }catch(_e){}
   }
-
   function updateTurnUI(){
     const c=state.currentPlayer;
     turnText.textContent = state.winner ? `${PLAYER_NAME[state.winner]} gewinnt!` : `${PLAYER_NAME[c]} ist dran`;
     turnDot.style.background = COLORS[c];
-
     const isMyTurn = (netMode==="offline") ? true : (myColor && myColor===state.currentPlayer);
     rollBtn.disabled = (phase!=="need_roll") || !isMyTurn;
     endBtn.disabled  = (phase==="need_roll"||phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
     if(skipBtn) skipBtn.disabled = (phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
-
     if(colorPickWrap){
       colorPickWrap.style.display = (netMode!=="offline" && !myColor) ? "block" : "none";
     }
   }
-
   function endTurn(){
     if(state && state.dice === 6 && !state.winner){
       state.dice = null;
       setDiceFaceAnimated(0);
-
       legalTargets=[]; setPlacingChoices([]);
       selected=null; legalMovesAll=[]; legalMovesByPiece=new Map();
       setPhase("need_roll");
@@ -790,7 +636,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
     nextPlayer();
   }
-
   function nextPlayer(){
     const order = state.players?.length ? state.players : PLAYERS;
     const idx = order.indexOf(state.currentPlayer);
@@ -802,14 +647,11 @@ try{ ws = new WebSocket(SERVER_URL); }
     setPhase("need_roll");
     updateTurnUI(); draw();
   }
-
   function rollDice(){
     if(phase!=="need_roll") return;
     state.dice = 1 + Math.floor(Math.random()*6);
     setDiceFaceAnimated(state.dice);
-
     toast(`Wurf: ${state.dice}`);
-
     legalMovesAll = computeLegalMoves(state.currentPlayer, state.dice);
     legalMovesByPiece = new Map();
     for(const m of legalMovesAll){
@@ -818,7 +660,6 @@ try{ ws = new WebSocket(SERVER_URL); }
       legalMovesByPiece.get(idx).push(m);
     }
     legalTargets = legalMovesAll;
-
     if(legalMovesAll.length===0){
       toast("Kein Zug möglich – Zug verfällt");
       endTurn();
@@ -827,7 +668,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     setPhase("need_move");
     updateTurnUI(); draw();
   }
-
   function pieceAtBoardNode(nodeId, color){
     const arr = state.pieces[color];
     for(let i=0;i<arr.length;i++){
@@ -861,7 +701,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
     return false;
   }
-
   function anyPiecesAtNode(nodeId){
     const res=[];
     for(const c of PLAYERS){
@@ -870,7 +709,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
     return res;
   }
-
   function enumeratePaths(startId, steps){
     const results=[];
     const visited=new Set([startId]);
@@ -887,7 +725,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     dfs(startId, steps, [startId]);
     return results;
   }
-
   function computeLegalMoves(color, dice){
     const moves=[];
     for(let i=0;i<5;i++){
@@ -921,13 +758,11 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
     return uniq;
   }
-
   function checkWin(){
     for(const c of PLAYERS){
       if(state.pieces[c].filter(p=>p.pos==="goal").length===5){ state.winner=c; return; }
     }
   }
-
   // 🔥 BRUTAL placements: any node (except goal, no duplicates)
   function computeBarricadePlacements(){
     const choices=[];
@@ -938,18 +773,14 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
     setPlacingChoices(choices);
   }
-
   function movePiece(move){
     const {color,index}=move.piece;
     const toId=move.toId;
-
     // hit enemies
     const enemies = anyPiecesAtNode(toId).filter(p=>p.color!==color);
     for(const e of enemies) state.pieces[e.color][e.index].pos="house";
-
     const landsOnBarr = state.barricades.has(toId);
     state.pieces[color][index].pos=toId;
-
     if(toId===goalNodeId){
       state.pieces[color][index].pos="goal";
       toast("Ziel erreicht!");
@@ -962,7 +793,6 @@ try{ ws = new WebSocket(SERVER_URL); }
       endTurn();
       return;
     }
-
     if(landsOnBarr){
       state.barricades.delete(toId);
       if(barrInfo) barrInfo.textContent=String(state.barricades.size);
@@ -972,10 +802,8 @@ try{ ws = new WebSocket(SERVER_URL); }
       toast("Barikade eingesammelt – jetzt neu platzieren");
       return;
     }
-
     endTurn();
   }
-
   function placeBarricade(nodeId){
     if(phase!=="placing_barricade") return;
     if(nodeId===goalNodeId){ toast("Ziel ist gesperrt"); return; }
@@ -986,7 +814,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     toast("Barikade platziert");
     endTurn();
   }
-
   // ===== Rendering =====
   function resize(){
     dpr=Math.max(1, Math.min(2.5, window.devicePixelRatio||1));
@@ -997,7 +824,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     draw();
     // Mobile browsers report unstable canvas size during load/orientation.
     setTimeout(()=>{ if(!view._fittedOnce) { try{ ensureFittedOnce(); }catch(_e){} } }, 80);
-
   }
   window.addEventListener("resize", resize);
   window.addEventListener("orientationchange", ()=>{
@@ -1005,10 +831,8 @@ try{ ws = new WebSocket(SERVER_URL); }
     view._fittedOnce = false;
     setTimeout(()=>{ try{ resize(); ensureFittedOnce(); }catch(_e){} }, 200);
   });
-
   function worldToScreen(p){ return {x:(p.x+view.x)*view.s, y:(p.y+view.y)*view.s}; }
   function screenToWorld(p){ return {x:p.x/view.s-view.x, y:p.y/view.s-view.y}; }
-
   function drawBarricadeIcon(x,y,r){
     ctx.save();
     ctx.fillStyle="rgba(0,0,0,0.85)";
@@ -1036,7 +860,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     const idx = slot - 1;
     if(!state?.pieces?.[color]) return;
     if(state.pieces[color][idx].pos !== "house") return;
-
     ctx.save();
     // (27) subtle gradient for pieces
     const g = ctx.createRadialGradient(x - r*0.18, y - r*0.18, r*0.15, x, y, r*0.75);
@@ -1065,7 +888,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     ctx.beginPath();
     ctx.arc(x, y, r*0.95, 0, Math.PI*2);
     ctx.fill(); ctx.stroke();
-
     if(arr.length > 1){
       ctx.fillStyle="rgba(0,0,0,0.65)";
       ctx.beginPath();
@@ -1078,12 +900,10 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
     ctx.restore();
   }
-
   function draw(){
     if(!board||!state) return;
     const rect=canvas.getBoundingClientRect();
     ctx.clearRect(0,0,rect.width,rect.height);
-
     // grid
     const grid=Math.max(10,(board.ui?.gridSize||20))*view.s;
     ctx.save();
@@ -1093,7 +913,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     for(let x=-ox;x<rect.width;x+=grid){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,rect.height);ctx.stroke();}
     for(let y=-oy;y<rect.height;y+=grid){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(rect.width,y);ctx.stroke();}
     ctx.restore();
-
     // edges
     ctx.save();
     ctx.lineWidth=3; ctx.strokeStyle=COLORS.edge;
@@ -1104,7 +923,6 @@ try{ ws = new WebSocket(SERVER_URL); }
       ctx.beginPath();ctx.moveTo(sa.x,sa.y);ctx.lineTo(sb.x,sb.y);ctx.stroke();
     }
     ctx.restore();
-
     // (109) last move trail + (8) destination glow
     const nowFx = performance.now();
     if(lastMoveFx && lastMoveFx.pts && nowFx - lastMoveFx.t0 < 900){
@@ -1129,25 +947,28 @@ try{ ws = new WebSocket(SERVER_URL); }
       ctx.stroke();
       ctx.restore();
     }
-
-    // (7) ghost piece sliding along path (visual only)
+    // (7) ghost piece sliding along path (visual only) — now with hop per step
     if(moveGhostFx && moveGhostFx.pts && nowFx - moveGhostFx.t0 < moveGhostFx.dur){
       const t = (nowFx - moveGhostFx.t0) / moveGhostFx.dur;
-      const nseg = moveGhostFx.pts.length-1;
       const f = Math.max(0, Math.min(1, t));
-      const idx = Math.min(nseg-1, Math.floor(f * nseg));
+      const nseg = moveGhostFx.pts.length - 1;
+      const idx = Math.min(nseg - 1, Math.floor(f * nseg));
       const localT = (f * nseg) - idx;
       const a = moveGhostFx.pts[idx];
-      const b = moveGhostFx.pts[idx+1];
-      const x = a.x + (b.x-a.x)*localT;
-      const y = a.y + (b.y-a.y)*localT;
+      const b = moveGhostFx.pts[idx + 1];
+      // base lerp
+      let x = a.x + (b.x - a.x) * localT;
+      let y = a.y + (b.y - a.y) * localT;
+      // hop (sinus) per segment
+      const hop = Math.sin(localT * Math.PI) * (moveGhostFx.hop || 12);
+      y -= hop;
       const col = COLORS[moveGhostFx.color] || moveGhostFx.color || 'rgba(255,255,255,0.9)';
       ctx.save();
-      ctx.globalAlpha = 0.75 * (1 - f*0.35);
-      const rr = 14;
-      const g = ctx.createRadialGradient(x-rr*0.2, y-rr*0.2, rr*0.2, x, y, rr*1.2);
-      g.addColorStop(0, 'rgba(255,255,255,0.55)');
-      g.addColorStop(0.35, col);
+      ctx.globalAlpha = 0.85;
+      const rr = 16;
+      const g = ctx.createRadialGradient(x-rr*0.2, y-rr*0.2, rr*0.2, x, y, rr*1.3);
+      g.addColorStop(0, 'rgba(255,255,255,0.6)');
+      g.addColorStop(0.4, col);
       g.addColorStop(1, 'rgba(0,0,0,0.25)');
       ctx.fillStyle = g;
       ctx.strokeStyle = 'rgba(0,0,0,0.55)';
@@ -1157,9 +978,7 @@ try{ ws = new WebSocket(SERVER_URL); }
       ctx.fill(); ctx.stroke();
       ctx.restore();
     }
-
-    const r=Math.max(16, board.ui?.nodeRadius || 20);
-
+const r=Math.max(16, board.ui?.nodeRadius || 20);
     // nodes
     for(const n of board.nodes){
       const s=worldToScreen(n);
@@ -1171,10 +990,8 @@ try{ ws = new WebSocket(SERVER_URL); }
       }else if(n.kind==="house"){
         fill=COLORS[n.flags?.houseColor]||COLORS.node;
       }
-
       ctx.beginPath(); ctx.fillStyle=fill; ctx.arc(s.x,s.y,r,0,Math.PI*2); ctx.fill();
       ctx.lineWidth=3; ctx.strokeStyle=COLORS.stroke; ctx.stroke();
-
       if(n.kind==="house" && n.flags?.houseSlot){
         ctx.fillStyle="rgba(0,0,0,0.55)";
         ctx.beginPath(); ctx.arc(s.x,s.y,r*0.55,0,Math.PI*2); ctx.fill();
@@ -1183,17 +1000,14 @@ try{ ws = new WebSocket(SERVER_URL); }
         ctx.textAlign="center"; ctx.textBaseline="middle";
         ctx.fillText(String(n.flags.houseSlot), s.x, s.y);
         drawHousePieces(n, s.x, s.y, r);
-
         if(selected && n.flags && n.flags.houseColor===selected.color && Number(n.flags.houseSlot)===selected.index+1){
           drawSelectionRing(s.x, s.y, r*0.85);
         }
       }
-
       if(n.kind==="board" && state.barricades.has(n.id)){
         drawBarricadeIcon(s.x,s.y,r);
       }
     }
-
     if(phase==="placing_barricade"){
       ctx.save();
       ctx.lineWidth=6;
@@ -1206,7 +1020,6 @@ try{ ws = new WebSocket(SERVER_URL); }
       }
       ctx.restore();
     }
-
     // pieces stacked
     const stacks=new Map();
     for(const c of PLAYERS){
@@ -1224,7 +1037,6 @@ try{ ws = new WebSocket(SERVER_URL); }
       const s=worldToScreen(n);
       drawStack(arr, s.x, s.y, r);
     }
-
     if(selected){
       const pc = state.pieces[selected.color]?.[selected.index];
       if(pc && typeof pc.pos==="string" && adj.has(pc.pos)){
@@ -1236,7 +1048,6 @@ try{ ws = new WebSocket(SERVER_URL); }
       }
     }
   }
-
   // ===== Interaction =====
   function pointerPos(ev){
     const r=canvas.getBoundingClientRect();
@@ -1252,7 +1063,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
     return best;
   }
-
   function onPointerDown(ev){
     canvas.setPointerCapture(ev.pointerId);
     const sp=pointerPos(ev);
@@ -1275,28 +1085,23 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
     pointerMap.set(ev.pointerId, {x:sp.x,y:sp.y});
     if(pointerMap.size===2){ isPanning=false; panStart=null; return; }
-
     const wp=screenToWorld(sp);
     const hit=hitNode(wp);
-
     const isMyTurn = (netMode!=="client") || (myColor && myColor===state.currentPlayer);
     if(netMode==="client" && (!myColor || !isMyTurn) && (phase==="placing_barricade" || phase==="need_move" || phase==="need_roll")){
       toast(!myColor ? "Bitte Farbe wählen" : "Du bist nicht dran");
       return;
     }
-
 if(phase==="placing_barricade" && hit && hit.kind==="board"){
   // ONLINE: Server entscheidet immer (Host + Client senden)
   if(netMode!=="offline"){
     wsSend({type:"place_barricade", nodeId: hit.id, ts:Date.now()});
     return;
   }
-
   // OFFLINE: lokal platzieren
   placeBarricade(hit.id);
   return;
 }
-
     if(phase==="need_move"){
       if(trySelectAtNode(hit)) { draw(); return; }
       if(selected && hit && hit.kind==="board"){
@@ -1319,16 +1124,13 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
         return;
       }
     }
-
     isPanning=true;
     panStart={sx:sp.x,sy:sp.y,vx:view.x,vy:view.y};
   }
-
   function onPointerMove(ev){
     if(!pointerMap.has(ev.pointerId)) return;
     const sp=pointerPos(ev);
     pointerMap.set(ev.pointerId, {x:sp.x,y:sp.y});
-
     if(pointerMap.size===2){
       const pts=[...pointerMap.values()];
       const a=pts[0], b=pts[1];
@@ -1341,7 +1143,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
       view.s=Math.max(0.25, Math.min(3.2, pz.s0*factor));
       draw(); return;
     } else { onPointerMove._pinch=null; }
-
     if(isPanning && panStart){
       const dx=(sp.x-panStart.sx)/view.s;
       const dy=(sp.y-panStart.sy)/view.s;
@@ -1354,12 +1155,10 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     if(pointerMap.has(ev.pointerId)) pointerMap.delete(ev.pointerId);
     if(pointerMap.size===0){ isPanning=false; panStart=null; onPointerMove._pinch=null; saveView(); }
   }
-
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
   canvas.addEventListener("pointerup", onPointerUp);
   canvas.addEventListener("pointercancel", onPointerUp);
-
   // ===== Buttons =====
   rollBtn.addEventListener("click", () => {
     if(netMode!=="offline"){
@@ -1371,7 +1170,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     rollDice();
     if(netMode==="host") broadcastState("state");
   });
-
   endBtn.addEventListener("click", () => {
     if(netMode!=="offline"){
       toast("Zug beenden macht der Server automatisch nach dem Zug");
@@ -1380,7 +1178,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     if(phase!=="placing_barricade" && phase!=="game_over") nextPlayer();
     if(netMode==="host") broadcastState("state");
   });
-
   if(skipBtn) skipBtn.addEventListener("click", () => {
     if(netMode==="client"){
       if(!myColor){ toast("Bitte Farbe wählen"); return; }
@@ -1390,7 +1187,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     if(phase!=="placing_barricade" && phase!=="game_over"){ toast("Runde ausgesetzt"); nextPlayer(); }
     if(netMode==="host") broadcastState("state");
   });
-
   resetBtn.addEventListener("click", () => {
     if(netMode==="offline"){
       newGame();
@@ -1399,51 +1195,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
     wsSend({type:"reset", ts:Date.now()});
   });
-
-  // --- Save / Load (Download .json / Upload .json) ---
-  if(saveBtn) saveBtn.addEventListener("click", () => {
-    if(netMode==="offline"){
-      const st = serializeLocalState();
-      if(!st){ toast("Kein Spielstand"); return; }
-      const save = { v:1, ts:Date.now(), room:"offline", mode:"offline", state: st };
-      handleSaveDownload(save);
-      return;
-    }
-    if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
-    wsSend({ type:"save_request", ts:Date.now() });
-  });
-
-  if(loadBtn) loadBtn.addEventListener("click", () => {
-    if(!loadFile){ toast("Load-Input fehlt"); return; }
-    loadFile.value = ""; // allow re-select same file
-    loadFile.click();
-  });
-
-  if(loadFile) loadFile.addEventListener("change", async () => {
-    const file = loadFile.files && loadFile.files[0];
-    if(!file){ return; }
-    let text="";
-    try{ text = await file.text(); }catch(_e){ toast("Datei konnte nicht gelesen werden"); return; }
-    const save = safeJsonParse(text);
-    if(!save || typeof save!=="object"){ toast("Ungültige Save-Datei"); return; }
-
-    // Online: Server lädt autoritativ
-    if(netMode!="offline"){
-      if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
-      wsSend({ type:"load_save", save, ts:Date.now() });
-      return;
-    }
-
-    // Offline: lokal anwenden
-    if(save.state){
-      applyRemoteState(save.state);
-      toast("Spielstand geladen (offline)");
-    }else{
-      applyRemoteState(save);
-      toast("Spielstand geladen");
-    }
-  });
-
   // Online actions
   hostBtn.addEventListener("click", () => {
     netMode = "host";
@@ -1454,7 +1205,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     connectWS();
     toast("Host gestartet – teile den Raumcode");
   });
-
   joinBtn.addEventListener("click", () => {
     netMode = "client";
     clientId = clientId || ("C-" + randId(8));
@@ -1464,7 +1214,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     connectWS();
     toast("Beitreten…");
   });
-
   leaveBtn.addEventListener("click", () => {
     netMode = "offline";
     saveSession();
@@ -1472,13 +1221,11 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     setNetPlayers([]);
     toast("Offline");
   });
-
   // Color pick
   if(btnPickRed) btnPickRed.addEventListener("click", ()=>chooseColor("red"));
   if(btnPickBlue) btnPickBlue.addEventListener("click", ()=>chooseColor("blue"));
   if(btnPickGreen) btnPickGreen.addEventListener("click", ()=>chooseColor("green"));
   if(btnPickYellow) btnPickYellow.addEventListener("click", ()=>chooseColor("yellow"));
-
   // ===== Host: intent processing =====
   function colorOf(id){
     const p = rosterById.get(id) || null;
@@ -1491,7 +1238,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
   function handleRemoteIntent(intent, senderId=""){
     const senderColor = colorOf(senderId);
     const mustBeTurnPlayer = () => senderColor && senderColor===state.currentPlayer;
-
     const t = intent.type;
     if(t==="roll"){
       if(!mustBeTurnPlayer()) return;
@@ -1514,11 +1260,9 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     if(t==="move"){
       if(!mustBeTurnPlayer()) return;
       if(phase!=="need_move") return;
-
       const toId = intent.toId;
       const pieceIndex = Number(intent.pieceIndex);
       if(!toId || !(pieceIndex>=0 && pieceIndex<5)) return;
-
       const list = legalMovesByPiece.get(pieceIndex) || [];
       const m = list.find(x=>x.toId===toId && x.piece.color===senderColor);
       if(m){ movePiece(m); broadcastState("state"); return; }
@@ -1532,14 +1276,12 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
       return;
     }
   }
-
   // ===== Init =====
   (async function init(){
     try{
       board = await loadBoard();
       buildGraph();
       resize();
-
       // restore previous view if available (optional)
       let hadSavedView = false;
       if(AUTO_CENTER_ALWAYS){
@@ -1548,7 +1290,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
       }else{
         hadSavedView = loadView();
       }
-
       // auto center
       if(AUTO_CENTER_ALWAYS || !hadSavedView){
       const xs = board.nodes.map(n=>n.x), ys=board.nodes.map(n=>n.y);
@@ -1561,13 +1302,10 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
       view.s = Math.max(0.35, Math.min(1.4, Math.min(sx,sy)));
       view.x = (rect.width/2)/view.s - cx;
       view.y = (rect.height/2)/view.s - cy;
-
       }
-
       // ensure board is on-screen immediately
       view._fittedOnce = false;
       try{ ensureFittedOnce(); }catch(_e){}
-
       const sess = loadSession();
       clientId = sess.id || "";
       if(sess.r){ roomCode = normalizeRoomCode(sess.r); roomCodeInp.value = roomCode; }
