@@ -621,7 +621,7 @@ try{ ws = new WebSocket(SERVER_URL); }
 
     const now = performance.now();
     const steps = Math.max(1, pts.length - 1);
-    const dur = Math.min(4200, 1400 + steps * 420); // much slower + clearly visible hops
+    const dur = Math.min(980, 520 + Math.max(0, steps - 2) * 55); // a touch slower on longer paths
     const weights = buildGhostWeights(pts);
 
     lastMoveFx = { color: color || "white", pts, t0: now, dur, weights, landed:false };
@@ -791,6 +791,7 @@ try{ ws = new WebSocket(SERVER_URL); }
   }
 
   function endTurn(){
+    if(!state){ console.warn('endTurn: state is null'); return; }
     if(state && state.dice === 6 && !state.winner){
       state.dice = null;
       setDiceFaceAnimated(0);
@@ -806,6 +807,7 @@ try{ ws = new WebSocket(SERVER_URL); }
   }
 
   function nextPlayer(){
+    if(!state){ console.warn('nextPlayer: state is null'); return; }
     const order = state.players?.length ? state.players : PLAYERS;
     const idx = order.indexOf(state.currentPlayer);
     state.currentPlayer = order[(idx+1)%order.length];
@@ -956,12 +958,6 @@ try{ ws = new WebSocket(SERVER_URL); }
   function movePiece(move){
     const {color,index}=move.piece;
     const toId=move.toId;
-
-    // (visual only) animate hop path in OFFLINE mode (server mode already sends action.path)
-    if(netMode==="offline" && move && Array.isArray(move.path) && move.path.length>=2){
-      const pieceId = `p_${color}_${index+1}`;
-      queueMoveFx({ pieceId, path: move.path });
-    }
 
     // hit enemies
     const enemies = anyPiecesAtNode(toId).filter(p=>p.color!==color);
@@ -1150,55 +1146,37 @@ try{ ws = new WebSocket(SERVER_URL); }
       ctx.restore();
     }
 
-    // (7) ghost piece hopping along path (visual only)
+    // (7) ghost piece sliding along path (visual only)
     if(moveGhostFx && moveGhostFx.pts && nowFx - moveGhostFx.t0 < moveGhostFx.dur){
-      const t = (nowFx - moveGhostFx.t0) / moveGhostFx.dur;   // 0..1
+      const t = (nowFx - moveGhostFx.t0) / moveGhostFx.dur;
       const fRaw = Math.max(0, Math.min(1, t));
-
-      // weighted timing + gentle ease
+      // weighted path timing + slightly eased finish (visual only)
       const f = easeOutQuad(fRaw);
       const sp = sampleGhostAt(moveGhostFx.pts, moveGhostFx.weights, f);
-
       let x = sp.x;
       let y = sp.y;
 
-      // Big visible hop per field
-      const segN = Math.max(1, (moveGhostFx.pts.length - 1));
-      const stepPhase = fRaw * segN;                 // 0..segN
-      const local = stepPhase - Math.floor(stepPhase); // 0..1 within current step
-
-      // amplitude in screen px (bigger + readable, independent from zoom)
-      const amp = 18 + Math.min(18, segN * 1.2);
-      const hop = Math.sin(local * Math.PI) * amp;
-      y -= hop;
-
-      // Final landing bounce
-      if (fRaw > 0.90){
-        const u = Math.max(0, Math.min(1, (fRaw - 0.90) / 0.10));
-        y -= Math.sin(u * Math.PI) * (1-u) * 12;
+      // tiny landing bounce on the very last part (visual only)
+      if (fRaw > 0.86){
+        const u = Math.max(0, Math.min(1, (fRaw - 0.86) / 0.14));
+        const bounce = Math.sin(u * Math.PI) * (1-u) * 6;
+        y -= bounce;
       }
-
-      const col = COLORS[moveGhostFx.color] || moveGhostFx.color || "rgba(255,255,255,0.9)";
-
+      const col = COLORS[moveGhostFx.color] || moveGhostFx.color || 'rgba(255,255,255,0.9)';
       ctx.save();
-      ctx.globalAlpha = 0.82 * (1 - f*0.30);
-
-      const rr = 15;
-      const g = ctx.createRadialGradient(x-rr*0.2, y-rr*0.2, rr*0.2, x, y, rr*1.25);
-      g.addColorStop(0, "rgba(255,255,255,0.55)");
+      ctx.globalAlpha = 0.75 * (1 - f*0.35);
+      const rr = 14;
+      const g = ctx.createRadialGradient(x-rr*0.2, y-rr*0.2, rr*0.2, x, y, rr*1.2);
+      g.addColorStop(0, 'rgba(255,255,255,0.55)');
       g.addColorStop(0.35, col);
-      g.addColorStop(1, "rgba(0,0,0,0.25)");
+      g.addColorStop(1, 'rgba(0,0,0,0.25)');
       ctx.fillStyle = g;
-      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
       ctx.lineWidth = 2;
-
       ctx.beginPath();
       ctx.arc(x, y, rr, 0, Math.PI*2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
-    }
-
+      ctx.fill(); ctx.stroke();
+      
     // (7.1) landing ring + dust (visual only)
     if(landFxs && landFxs.length){
       const alive=[];
@@ -1206,39 +1184,41 @@ try{ ws = new WebSocket(SERVER_URL); }
         const age = nowFx - fx.t0;
         if(age < -40) { alive.push(fx); continue; } // scheduled for future
         if(age >= fx.dur) continue;
-
         const p = worldToScreen({x:fx.x, y:fx.y});
         const u = Math.max(0, Math.min(1, age / fx.dur));
         const a = 1 - u;
         const col = COLORS[fx.color] || fx.color || "rgba(255,255,255,0.9)";
-
         ctx.save();
         ctx.globalAlpha = 0.55 * a;
         ctx.strokeStyle = col;
         ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 10 + u*20, 0, Math.PI*2);
+        ctx.arc(p.x, p.y, 10 + u*18, 0, Math.PI*2);
         ctx.stroke();
 
         // tiny dust specks
-        ctx.globalAlpha = 0.26 * a;
+        ctx.globalAlpha = 0.28 * a;
         ctx.fillStyle = "rgba(255,255,255,0.9)";
         const seed = fx.seed || 0.123;
         for(let i=0;i<7;i++){
           const ang = (seed*999 + i*0.9) % (Math.PI*2);
-          const rr = 6 + u*24 + i*0.8;
+          const rr = 6 + u*22 + i*0.8;
           const sx = p.x + Math.cos(ang) * rr;
           const sy = p.y + Math.sin(ang) * rr;
           ctx.beginPath();
           ctx.arc(sx, sy, 2.2 - u*1.2, 0, Math.PI*2);
           ctx.fill();
         }
-
         ctx.restore();
         alive.push(fx);
       }
       landFxs = alive;
     }
+
+ctx.restore();
+    }
+
+    const r=Math.max(16, board.ui?.nodeRadius || 20);
 
     // nodes
     for(const n of board.nodes){
@@ -1615,6 +1595,7 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
       if(netMode==="offline"){
         newGame();
       }
+      window.__DBG = { get state(){ return state; }, get board(){ return board; }, get phase(){ return phase; }, get netMode(){ return netMode; } };
       toast("Bereit. Online: Host/Beitreten.");
     }catch(err){
       showOverlay("Fehler","Board konnte nicht geladen werden", String(err.message||err));
