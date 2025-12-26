@@ -197,6 +197,13 @@
   let rosterById=new Map();
   let myColor=null;
 
+  // ===== Move-step animation lock (field-by-field) =====
+  let animatingMove = false;
+  let pendingRemoteState = null;
+  let pendingPlayersList = null;
+  let moveStepTimer = null;
+
+
   let reconnectTimer=null;
   let reconnectAttempt=0;
   let pendingIntents=[];
@@ -350,7 +357,6 @@ try{ ws = new WebSocket(SERVER_URL); }
         return;
       }
       if(type==="roll"){
-        hasRemoteState = true; clearTimeout(autoStartTimer);
         // (108/26) small suspense + particles
         if(typeof msg.value==="number") setDiceFaceAnimated(msg.value);
         if(msg.state) applyRemoteState(msg.state);
@@ -358,7 +364,6 @@ try{ ws = new WebSocket(SERVER_URL); }
         return;
       }
       if(type==="move"){
-        hasRemoteState = true; clearTimeout(autoStartTimer);
         // (7/8/109) animate path + destination glow
         if(msg.action) queueMoveFx(msg.action);
         if(msg.state) applyRemoteState(msg.state);
