@@ -135,6 +135,8 @@
   // Landing FX (visual only)
   let landFxs = [];
   let lastDiceFace = 0;
+  const SHOW_MOVE_TRAIL = false; // Option A: kein Schatten/Trail
+  const SHOW_GHOST_PIECE = false; // Figur immer vor den Feldern (Ghost/Overlay aus)
   let lastMoveFx = null;
   let moveGhostFx = null;
 
@@ -599,7 +601,12 @@ try{ ws = new WebSocket(SERVER_URL); }
   // ===== Small animation helpers (visual only) =====
   function easeOutQuad(t){ t = Math.max(0, Math.min(1, t)); return 1 - (1-t)*(1-t); }
 
-  function buildGhostWeights(pts){
+  
+
+  function easeInOutCubic(t){
+    return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2;
+  }
+function buildGhostWeights(pts){
     // weights based on segment length; last step gets extra drama
     const segN = Math.max(0, (pts?.length||0) - 1);
     const w = [];
@@ -650,25 +657,12 @@ try{ ws = new WebSocket(SERVER_URL); }
 
 
   // Step-by-step animation sampler: moves segment by segment with a short land pause on each node.
-  // ===== Move animation tuning (Option A: technisch/sauber) =====
-  const MOVE_STEP_MS = 230;   // travel time per field (ms)
-  const MOVE_HOLD_MS = 130;   // pause on each field (ms)
-  const MOVE_HOP_PX  = 26;    // hop height (px)
-  const MOVE_LAND_BOUNCE_PX = 8; // landing bounce (px)
-  const MOVE_TIMING_JITTER = false; // optional: tiny speed variation (off)
-
   function sampleStepGhostAt(fx, now){
     const pts = fx.pts || [];
     const segN = Math.max(0, pts.length - 1);
-    if(segN <= 0) return {x: pts?.[0]?.x||0, y: pts?.[0]?.y||0, idx:0, local:0, inHold:false, holdT:0};
-
-    const travelBase = Math.max(80, fx.stepMs || MOVE_STEP_MS);
-    const hold = Math.max(0, fx.holdMs ?? MOVE_HOLD_MS);
-
-    const travel = (MOVE_TIMING_JITTER && typeof fx._jitterMs==="number")
-      ? Math.max(80, travelBase + fx._jitterMs)
-      : travelBase;
-
+    if(segN <= 0) return {x: pts?.[0]?.x||0, y: pts?.[0]?.y||0, idx:0, local:0, inHold:false};
+    const travel = Math.max(80, fx.stepMs || 260);
+    const hold   = Math.max(0,  fx.holdMs || 120);
     const per = travel + hold;
     const elapsed = Math.max(0, now - fx.t0);
     const total = segN * per;
@@ -680,24 +674,17 @@ try{ ws = new WebSocket(SERVER_URL); }
     const a = pts[idx], b = pts[idx+1];
     const inHold = (u >= travel);
     const local = inHold ? 1 : (u / travel);
-    const holdT = (inHold && hold>0) ? Math.max(0, Math.min(1, (u - travel) / hold)) : 0;
 
     let x = a.x + (b.x - a.x) * local;
     let y = a.y + (b.y - a.y) * local;
 
-    const hopAmp = (fx.hopPx != null) ? fx.hopPx : MOVE_HOP_PX;
-
+    // visible hop on every step while moving
+    const amp = (fx.hopPx != null) ? fx.hopPx : (16 + Math.min(10, segN * 1.1));
     if(!inHold){
-      y -= Math.sin(local * Math.PI) * hopAmp;
-    }else{
-      const k = Math.max(0, 1 - holdT);
-      const bounce = Math.sin((1 - holdT) * Math.PI) * k * (fx.landBouncePx ?? MOVE_LAND_BOUNCE_PX);
-      y -= bounce;
+      y -= Math.sin(local * Math.PI) * amp;
     }
-
-    return {x,y,idx,local,inHold,holdT,a,b};
+    return {x,y,idx,local,inHold,a,b};
   }
-
 
   function queueMoveFx(action){
     if(!action || !board) return;
@@ -741,15 +728,23 @@ try{ ws = new WebSocket(SERVER_URL); }
     const weights = buildGhostWeights(pts);
 
     // Per-field stepping: travel + short land pause so you can SEE each field being entered.
-    const stepMs = MOVE_STEP_MS;   // travel time per field
-    const holdMs = MOVE_HOLD_MS;   // pause on each field
+    const stepMs = 260;   // travel time per field
+    const holdMs = 140;   // pause on each field
     const dur = Math.min(5200, steps * (stepMs + holdMs));
 
     lastMoveFx = { color: color || "white", pts, t0: now, dur, weights, landed:false };
-    moveGhostFx = { pieceId: String(action.pieceId||""), color: color || "white", pts, t0: now, dur, stepMs, holdMs, hopPx: MOVE_HOP_PX, landBouncePx: MOVE_LAND_BOUNCE_PX, _jitterMs: (MOVE_TIMING_JITTER ? (Math.floor(Math.random()*21)-10) : 0) };
+    if(SHOW_GHOST_PIECE){
+
+      moveGhostFx = { pieceId: String(action.pieceId||\"\"), color: color || \"white\", pts, t0: now, dur, stepMs, holdMs, hopPx: 18 };
+
+    }else{
+
+      moveGhostFx = null;
+
+    }
 
     // This is what prevents "teleport": we temporarily draw the real piece at interpolated positions
-    movingPiecesFx.set(pid, { color: color || "white", pts, t0: now, dur, weights, stepMs, holdMs, hopPx: MOVE_HOP_PX, landBouncePx: MOVE_LAND_BOUNCE_PX, _jitterMs: 0 });
+    movingPiecesFx.set(pid, { color: color || "white", pts, t0: now, dur, weights });
 
     // landing ring / dust (purely visual)
     const endW = nodeById.get(pts[pts.length-1].id) || null;
@@ -1179,7 +1174,12 @@ try{ ws = new WebSocket(SERVER_URL); }
     if(state.pieces[color][idx].pos !== "house") return;
 
     ctx.save();
-    // (27) subtle gradient for pieces
+    ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(1.0 + (1.0 - squash)*0.08, squash);
+        ctx.translate(-x, -y);
+
+        // (27) subtle gradient for pieces
     const g = ctx.createRadialGradient(x - r*0.18, y - r*0.18, r*0.15, x, y, r*0.75);
     g.addColorStop(0, "rgba(255,255,255,0.45)");
     g.addColorStop(0.35, COLORS[color]);
@@ -1272,7 +1272,7 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
 
     // (7) ghost piece stepping field-to-field (visual only)
-    if(moveGhostFx && moveGhostFx.pts && (nowFx - moveGhostFx.t0) < moveGhostFx.dur){
+    if(SHOW_GHOST_PIECE && moveGhostFx && moveGhostFx.pts && (nowFx - moveGhostFx.t0) < moveGhostFx.dur){
       const sp = sampleStepGhostAt(moveGhostFx, nowFx);
       let x = sp.x;
       let y = sp.y;
@@ -1424,21 +1424,23 @@ try{ ws = new WebSocket(SERVER_URL); }
         const fx = m.fx;
         const t = (nowMove - fx.t0) / fx.dur;
         const fRaw = Math.max(0, Math.min(1, t));
-        const f = easeOutQuad(fRaw);
-        const sp = (fx && fx.stepMs) ? sampleStepGhostAt(fx, nowMove) : sampleGhostAt(fx.pts, fx.weights, f);
+        const f = easeInOutCubic(fRaw);
+        const sp = sampleGhostAt(fx.pts, fx.weights, f);
         let x = sp.x;
         let y = sp.y;
 
-        // big, clear hop per segment (field-to-field)
-        const hopAmp = MOVE_HOP_PX * 0.6; // px
+        // A) echter Sprungbogen pro Feld
+        const hopAmp = 20; // px
         const hop = Math.sin(sp.localT * Math.PI) * hopAmp;
         y -= hop;
 
-        // a small landing bounce near the end
-        if (fRaw > 0.86){
-          const u = Math.max(0, Math.min(1, (fRaw - 0.86) / 0.14));
-          const bounce = Math.sin(u * Math.PI) * (1-u) * (MOVE_LAND_BOUNCE_PX*0.8);
+        // D) Micro-Landing-Bounce + Squash
+        let squash = 1.0;
+        if (fRaw > 0.88){
+          const u = Math.max(0, Math.min(1, (fRaw - 0.88) / 0.12));
+          const bounce = Math.sin(u * Math.PI) * (1-u) * 7;
           y -= bounce;
+          squash = 1.0 - 0.10*Math.sin(u * Math.PI);
         }
 
         // Draw like a normal stack-piece but single
