@@ -621,7 +621,7 @@ try{ ws = new WebSocket(SERVER_URL); }
 
     const now = performance.now();
     const steps = Math.max(1, pts.length - 1);
-    const dur = Math.min(980, 520 + Math.max(0, steps - 2) * 55); // a touch slower on longer paths
+    const dur = Math.min(2600, 1100 + steps * 260); // slower + more readable hop across fields
     const weights = buildGhostWeights(pts);
 
     lastMoveFx = { color: color || "white", pts, t0: now, dur, weights, landed:false };
@@ -1154,11 +1154,18 @@ try{ ws = new WebSocket(SERVER_URL); }
       let x = sp.x;
       let y = sp.y;
 
-      // tiny landing bounce on the very last part (visual only)
-      if (fRaw > 0.86){
-        const u = Math.max(0, Math.min(1, (fRaw - 0.86) / 0.14));
-        const bounce = Math.sin(u * Math.PI) * (1-u) * 6;
-        y -= bounce;
+      // visible hop on every field while moving (visual only)
+      const segN = Math.max(1, (moveGhostFx.pts.length - 1));
+      const stepPhase = fRaw * segN;            // 0..segN
+      const local = stepPhase - Math.floor(stepPhase); // 0..1 per step
+      const amp = 10 + Math.min(10, segN * 0.8); // bigger hop on longer moves
+      const hop = Math.sin(local * Math.PI) * amp;
+      y -= hop;
+
+      // small final landing bounce (visual only)
+      if (fRaw > 0.93){
+        const u = Math.max(0, Math.min(1, (fRaw - 0.93) / 0.07));
+        y -= Math.sin(u * Math.PI) * (1-u) * 8;
       }
       const col = COLORS[moveGhostFx.color] || moveGhostFx.color || 'rgba(255,255,255,0.9)';
       ctx.save();
