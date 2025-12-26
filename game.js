@@ -14,6 +14,7 @@
   const diceEl  = $("diceCube");
   const turnText= $("turnText");
   const turnDot = $("turnDot");
+  const turnPill = document.querySelector(".turnPill");
   const boardInfo = $("boardInfo");
   const barrInfo  = $("barrInfo");
 
@@ -127,11 +128,43 @@
   let state=null;
 
   // ===== FX (safe, visual only) =====
+
+  // Turn UI helpers (visual only)
+  const TURN_EMOJI = { red:"🔴", blue:"🔵", green:"🟢", yellow:"🟡" };
+
+  // Landing FX (visual only)
+  let landFxs = [];
   let lastDiceFace = 0;
   const SHOW_MOVE_TRAIL = false; // Option A: kein Schatten/Trail
-  const SHOW_GHOST_PIECE = false; // Figur landet vor den Feldern (Ghost-Overlay aus)
+  const SHOW_GHOST_PIECE = false; // Figur immer vor den Feldern (Ghost/Overlay aus)
   let lastMoveFx = null;
   let moveGhostFx = null;
+
+  // Smooth animation loop (visual only). Runs only while FX are active.
+  let _rafId = 0;
+  function _hasActiveFx(now){
+    if(moveGhostFx && (now - moveGhostFx.t0) < moveGhostFx.dur) return true;
+    if(lastMoveFx && (now - lastMoveFx.t0) < 900) return true;
+    if(landFxs && landFxs.length) return true;
+    return false;
+  }
+  function ensureAnimLoop(){
+    if(_rafId) return;
+    const raf = window.requestAnimationFrame || (cb=>setTimeout(()=>cb(performance.now()), 16));
+    const caf = window.cancelAnimationFrame || (id=>clearTimeout(id));
+    const tick = (tNow)=>{
+      const now = (typeof tNow==="number") ? tNow : performance.now();
+      if(!_hasActiveFx(now)){
+        caf(_rafId);
+        _rafId = 0;
+        return;
+      }
+      try{ draw(); }catch(_e){}
+      _rafId = raf(tick);
+    };
+    _rafId = raf(tick);
+  }
+
 
   // ===== Online =====
   const SERVER_URL = "wss://serverfinal-9t39.onrender.com";
@@ -411,6 +444,7 @@ try{ ws = new WebSocket(SERVER_URL); }
       if(ph==="need_roll") phase="need_roll";
       else if(ph==="need_move") phase="need_move";
       else if(ph==="place_barricade") phase="placing_barricade";
+      else if(ph==="anim") phase="anim";
       else phase="need_roll";
 
       // show dice
@@ -563,14 +597,123 @@ try{ ws = new WebSocket(SERVER_URL); }
     return null;
   }
 
+
+  // ===== Small animation helpers (visual only) =====
+  function easeOutQuad(t){ t = Math.max(0, Math.min(1, t)); return 1 - (1-t)*(1-t); }
+
+  
+
+  function easeInOutCubic(t){
+    return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2;
+  }
+function buildGhostWeights(pts){
+    // weights based on segment length; last step gets extra drama
+    const segN = Math.max(0, (pts?.length||0) - 1);
+    const w = [];
+    for(let i=0;i<segN;i++){
+      const a=pts[i], b=pts[i+1];
+      const d = Math.hypot((b.x-a.x),(b.y-a.y));
+      w.push(Math.max(0.001, d));
+    }
+    if(segN>=1) w[segN-1] *= 1.7;      // last step slower
+    if(segN>=2) w[segN-2] *= 1.25;     // penultimate a bit slower
+    let sum = 0;
+    const cum = w.map(v => (sum += v));
+    return {w, cum, total: sum || 1};
+  }
+
+  function sampleGhostAt(pts, weights, f){
+    // f: 0..1 across total weighted length
+    const segN = (pts?.length||0) - 1;
+    if(segN <= 0) return {x:pts?.[0]?.x||0, y:pts?.[0]?.y||0, idx:0, localT:0};
+    const w = weights?.w, cum = weights?.cum, total = weights?.total || 1;
+    const tlen = Math.max(0, Math.min(1, f)) * total;
+    let i = 0;
+    while(i < segN-1 && cum && cum[i] < tlen) i++;
+    const prev = i===0 ? 0 : (cum[i-1] || 0);
+    const segW = (w && w[i]) ? w[i] : 1;
+    const localT = segW ? ((tlen - prev) / segW) : 0;
+    const a = pts[i], b = pts[i+1];
+    const lt = Math.max(0, Math.min(1, localT));
+    return {x: a.x + (b.x-a.x)*lt, y: a.y + (b.y-a.y)*lt, idx:i, localT:lt};
+  }
+
+  // Find a client-side piece (color/index/pos) by server pieceId.
+  function findClientPieceById(pieceId){
+    const pid = String(pieceId||"");
+    if(!pid || !state?.pieces) return null;
+    for(const c of (state.players || PLAYERS)){
+      const arr = state.pieces[c];
+      if(!Array.isArray(arr)) continue;
+      for(let i=0;i<arr.length;i++){
+        if(arr[i]?.pieceId === pid) return {color:c, index:i, pos: arr[i].pos};
+      }
+    }
+    return null;
+  }
+
+  // Piece animation overrides: pieceId -> {pts, weights, t0, dur, color}
+  let movingPiecesFx = new Map();
+
+
+  // Step-by-step animation sampler: moves segment by segment with a short land pause on each node.
+  function sampleStepGhostAt(fx, now){
+    const pts = fx.pts || [];
+    const segN = Math.max(0, pts.length - 1);
+    if(segN <= 0) return {x: pts?.[0]?.x||0, y: pts?.[0]?.y||0, idx:0, local:0, inHold:false};
+    const travel = Math.max(80, fx.stepMs || 260);
+    const hold   = Math.max(0,  fx.holdMs || 120);
+    const per = travel + hold;
+    const elapsed = Math.max(0, now - fx.t0);
+    const total = segN * per;
+    const clamped = Math.min(elapsed, Math.max(0, total - 1e-6));
+
+    const idx = Math.max(0, Math.min(segN-1, Math.floor(clamped / per)));
+    const u = clamped - idx * per;
+
+    const a = pts[idx], b = pts[idx+1];
+    const inHold = (u >= travel);
+    const local = inHold ? 1 : (u / travel);
+
+    let x = a.x + (b.x - a.x) * local;
+    let y = a.y + (b.y - a.y) * local;
+
+    // visible hop on every step while moving
+    const amp = (fx.hopPx != null) ? fx.hopPx : (16 + Math.min(10, segN * 1.1));
+    if(!inHold){
+      y -= Math.sin(local * Math.PI) * amp;
+    }
+    return {x,y,idx,local,inHold,a,b};
+  }
+
   function queueMoveFx(action){
     if(!action || !board) return;
-    const path = Array.isArray(action.path) ? action.path.map(String) : [];
-    if(path.length < 2) return;
-    const color = parseColorFromPieceId(action.pieceId) || null;
+    const pathRaw = Array.isArray(action.path) ? action.path.map(String) : [];
+    const pid = String(action.pieceId||"");
+    if(!pid || pathRaw.length < 1) return;
 
+    // If the piece comes from house, server path starts at the start-field.
+    // We prepend the current house node (client knows it via color/index).
+    const before = findClientPieceById(pid);
+    const color = parseColorFromPieceId(pid) || before?.color || null;
+
+    const fullPath = [...pathRaw];
+    if(before && before.pos === "house" && fullPath.length >= 1){
+      // locate house node for that slot
+      const slot = (before.index ?? 0) + 1;
+      let houseNodeId = null;
+      for(const n of (board.nodes||[])){
+        if(n.kind!=="house") continue;
+        if(String(n.flags?.houseColor||"") !== String(before.color)) continue;
+        if(Number(n.flags?.houseSlot||0) !== slot) continue;
+        houseNodeId = n.id; break;
+      }
+      if(houseNodeId) fullPath.unshift(String(houseNodeId));
+    }
+
+    // Build screen points
     const pts=[];
-    for(const id of path){
+    for(const id of fullPath){
       const n = nodeById.get(String(id));
       if(!n) continue;
       const s = worldToScreen(n);
@@ -579,8 +722,47 @@ try{ ws = new WebSocket(SERVER_URL); }
     if(pts.length < 2) return;
 
     const now = performance.now();
-    lastMoveFx = { color: color || "white", pts, t0: now, dur: 520 };
-    moveGhostFx = { color: color || "white", pts, t0: now, dur: 520 };
+    const steps = Math.max(1, pts.length - 1);
+
+    // weights based on distance (and last step drama) for the REAL piece animation
+    const weights = buildGhostWeights(pts);
+
+    // Per-field stepping: travel + short land pause so you can SEE each field being entered.
+    const stepMs = 260;   // travel time per field
+    const holdMs = 140;   // pause on each field
+    const dur = Math.min(5200, steps * (stepMs + holdMs));
+    if(SHOW_MOVE_TRAIL){
+      lastMoveFx = { color: color || "white", pts, t0: now, dur, weights, landed:false };
+    }else{
+      lastMoveFx = null;
+    }
+    if(SHOW_GHOST_PIECE){
+
+      moveGhostFx = { pieceId: String(action.pieceId||""), color: color || "white", pts, t0: now, dur, stepMs, holdMs, hopPx: 18 };
+
+    }else{
+
+      moveGhostFx = null;
+
+    }
+
+    // This is what prevents "teleport": we temporarily draw the real piece at interpolated positions
+    movingPiecesFx.set(pid, { color: color || "white", pts, t0: now, dur, weights });
+
+    // landing ring / dust (purely visual)
+    const endW = nodeById.get(pts[pts.length-1].id) || null;
+    ensureAnimLoop();
+
+    if(endW){
+      landFxs.push({
+        x: endW.x, y: endW.y,
+        t0: now + dur,
+        dur: 320,
+        color: color || "white",
+        seed: Math.random()
+      });
+      if(landFxs.length > 18) landFxs = landFxs.slice(-18);
+    }
   }
 
   function showOverlay(title, sub, hint){
@@ -702,13 +884,29 @@ try{ ws = new WebSocket(SERVER_URL); }
 
   function updateTurnUI(){
     const c=state.currentPlayer;
-    turnText.textContent = state.winner ? `${PLAYER_NAME[state.winner]} gewinnt!` : `${PLAYER_NAME[c]} ist dran`;
+    const emoji = TURN_EMOJI[c] || "";
+    turnText.textContent = state.winner
+      ? `${PLAYER_NAME[state.winner]} gewinnt!`
+      : `${emoji} ${PLAYER_NAME[c]} ist am Zug`;
     turnDot.style.background = COLORS[c];
 
+    // (1) visual: glow ring + pulsing dot (no logic impact)
+    if(turnPill){
+      if(state.winner){
+        turnPill.classList.remove("activeTurnGlow");
+      }else{
+        turnPill.classList.add("activeTurnGlow");
+      }
+    }
+    if(turnDot){
+      if(state.winner) turnDot.classList.remove("turnPulse");
+      else turnDot.classList.add("turnPulse");
+    }
+
     const isMyTurn = (netMode==="offline") ? true : (myColor && myColor===state.currentPlayer);
-    rollBtn.disabled = (phase!=="need_roll") || !isMyTurn;
-    endBtn.disabled  = (phase==="need_roll"||phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
-    if(skipBtn) skipBtn.disabled = (phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
+    rollBtn.disabled = (phase!=="need_roll") || (phase==="anim") || !isMyTurn;
+    endBtn.disabled  = (phase==="need_roll"||phase==="placing_barricade"||phase==="game_over"||phase==="anim") || !isMyTurn;
+    if(skipBtn) skipBtn.disabled = (phase==="placing_barricade"||phase==="game_over"||phase==="anim") || !isMyTurn;
 
     if(colorPickWrap){
       colorPickWrap.style.display = (netMode!=="offline" && !myColor) ? "block" : "none";
@@ -716,6 +914,7 @@ try{ ws = new WebSocket(SERVER_URL); }
   }
 
   function endTurn(){
+    if(!state){ console.warn('endTurn: state is null'); return; }
     if(state && state.dice === 6 && !state.winner){
       state.dice = null;
       setDiceFaceAnimated(0);
@@ -731,6 +930,7 @@ try{ ws = new WebSocket(SERVER_URL); }
   }
 
   function nextPlayer(){
+    if(!state){ console.warn('nextPlayer: state is null'); return; }
     const order = state.players?.length ? state.players : PLAYERS;
     const idx = order.indexOf(state.currentPlayer);
     state.currentPlayer = order[(idx+1)%order.length];
@@ -1018,11 +1218,7 @@ try{ ws = new WebSocket(SERVER_URL); }
     ctx.restore();
   }
 
-    function easeInOutCubic(t){
-    return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2;
-  }
-
-function draw(){
+  function draw(){
     if(!board||!state) return;
     const rect=canvas.getBoundingClientRect();
     ctx.clearRect(0,0,rect.width,rect.height);
@@ -1050,7 +1246,7 @@ function draw(){
 
     // (109) last move trail + (8) destination glow
     const nowFx = performance.now();
-    if(lastMoveFx && lastMoveFx.pts && nowFx - lastMoveFx.t0 < 900){
+    if(SHOW_MOVE_TRAIL && lastMoveFx && lastMoveFx.pts && nowFx - lastMoveFx.t0 < 900){
       const age = (nowFx - lastMoveFx.t0);
       const a = Math.max(0, 1 - age/900);
       const col = COLORS[lastMoveFx.color] || lastMoveFx.color || 'rgba(255,255,255,0.9)';
@@ -1073,33 +1269,65 @@ function draw(){
       ctx.restore();
     }
 
-    // (7) ghost piece sliding along path (visual only)
-    if(moveGhostFx && moveGhostFx.pts && nowFx - moveGhostFx.t0 < moveGhostFx.dur){
-      const t = (nowFx - moveGhostFx.t0) / moveGhostFx.dur;
-      const nseg = moveGhostFx.pts.length-1;
-      const f = Math.max(0, Math.min(1, t));
-      const idx = Math.min(nseg-1, Math.floor(f * nseg));
-      const localT = (f * nseg) - idx;
-      const a = moveGhostFx.pts[idx];
-      const b = moveGhostFx.pts[idx+1];
-      const x = a.x + (b.x-a.x)*localT;
-      const y = a.y + (b.y-a.y)*localT;
-      const col = COLORS[moveGhostFx.color] || moveGhostFx.color || 'rgba(255,255,255,0.9)';
+    // (7) ghost piece stepping field-to-field (visual only)
+    if(SHOW_GHOST_PIECE && moveGhostFx && moveGhostFx.pts && (nowFx - moveGhostFx.t0) < moveGhostFx.dur){
+      const sp = sampleStepGhostAt(moveGhostFx, nowFx);
+      let x = sp.x;
+      let y = sp.y;
+
+      const segN = Math.max(1, moveGhostFx.pts.length - 1);
+      const col = COLORS[moveGhostFx.color] || moveGhostFx.color || 'rgba(255,255,255,0.95)';
+
+      // Highlight the field being entered (ring pulse on the landing node)
+      const target = sp.b || moveGhostFx.pts[Math.min(segN, sp.idx+1)];
+      if(target){
+        const pulse = sp.inHold ? 1 : 0.55;
+        ctx.save();
+        ctx.globalAlpha = 0.55 * pulse;
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(target.x, target.y, 18 + (sp.inHold ? 6*(1-sp.local) : 0), 0, Math.PI*2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Draw a CLEAR colored piece (so you SEE which color is moving)
       ctx.save();
-      ctx.globalAlpha = 0.75 * (1 - f*0.35);
-      const rr = 14;
-      const g = ctx.createRadialGradient(x-rr*0.2, y-rr*0.2, rr*0.2, x, y, rr*1.2);
-      g.addColorStop(0, 'rgba(255,255,255,0.55)');
-      g.addColorStop(0.35, col);
-      g.addColorStop(1, 'rgba(0,0,0,0.25)');
-      ctx.fillStyle = g;
-      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
-      ctx.lineWidth = 2;
+      ctx.globalAlpha = 0.92;
+      const rr = 15;
+      ctx.fillStyle = col;
+      ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+      ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.arc(x, y, rr, 0, Math.PI*2);
-      ctx.fill(); ctx.stroke();
+      ctx.fill();
+      ctx.stroke();
+
+      // tiny white highlight
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.beginPath();
+      ctx.arc(x - rr*0.3, y - rr*0.3, rr*0.35, 0, Math.PI*2);
+      ctx.fill();
+
+      // step counter (e.g. 3/5) near the moving piece
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.beginPath();
+      ctx.rect(x+18, y-22, 34, 18);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.font = 'bold 12px system-ui';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(sp.idx+1) + "/" + String(segN), x+35, y-13);
+
       ctx.restore();
+
+      ensureAnimLoop();
     }
+
 
     const r=Math.max(16, board.ui?.nodeRadius || 20);
 
@@ -1151,11 +1379,31 @@ function draw(){
     }
 
     // pieces stacked
+    // While a piece is moving, we temporarily draw it at its interpolated position
+    // so it doesn't "teleport" to the destination immediately.
     const stacks=new Map();
+    const movingToDraw=[];
+    const nowMove = performance.now();
+
+    // cleanup expired
+    if(movingPiecesFx && movingPiecesFx.size){
+      for(const [pid, fx] of movingPiecesFx.entries()){
+        if(!fx || !fx.t0 || !fx.dur) { movingPiecesFx.delete(pid); continue; }
+        if(nowMove - fx.t0 > fx.dur + 60) movingPiecesFx.delete(pid);
+      }
+    }
+
     for(const c of PLAYERS){
       const pcs=state.pieces[c];
       for(let i=0;i<pcs.length;i++){
-        const pos=pcs[i].pos;
+        const pc = pcs[i];
+        const pid = pc?.pieceId ? String(pc.pieceId) : "";
+        const fx = pid ? movingPiecesFx.get(pid) : null;
+        if(fx){
+          movingToDraw.push({color:c,index:i,pid,fx});
+          continue;
+        }
+        const pos=pc.pos;
         if(typeof pos==="string" && adj.has(pos)){
           if(!stacks.has(pos)) stacks.set(pos, []);
           stacks.get(pos).push({color:c,index:i});
@@ -1166,6 +1414,36 @@ function draw(){
       const n=nodeById.get(nodeId); if(!n) continue;
       const s=worldToScreen(n);
       drawStack(arr, s.x, s.y, r);
+    }
+
+    // draw moving pieces (single piece, visible hop)
+    if(movingToDraw.length){
+      for(const m of movingToDraw){
+        const fx = m.fx;
+        const t = (nowMove - fx.t0) / fx.dur;
+        const fRaw = Math.max(0, Math.min(1, t));
+        const f = easeInOutCubic(fRaw);
+        const sp = sampleGhostAt(fx.pts, fx.weights, f);
+        let x = sp.x;
+        let y = sp.y;
+
+        // A) echter Sprungbogen pro Feld
+        const hopAmp = 20; // px
+        const hop = Math.sin(sp.localT * Math.PI) * hopAmp;
+        y -= hop;
+
+        // D) Micro-Landing-Bounce + Squash
+        let squash = 1.0;
+        if (fRaw > 0.88){
+          const u = Math.max(0, Math.min(1, (fRaw - 0.88) / 0.12));
+          const bounce = Math.sin(u * Math.PI) * (1-u) * 7;
+          y -= bounce;
+          squash = 1.0 - 0.10*Math.sin(u * Math.PI);
+        }
+
+        // Draw like a normal stack-piece but single
+        drawStack([{color:m.color,index:m.index}], x, y, r);
+      }
     }
 
     if(selected){
@@ -1223,6 +1501,11 @@ function draw(){
     const hit=hitNode(wp);
 
     const isMyTurn = (netMode!=="client") || (myColor && myColor===state.currentPlayer);
+
+    if(phase==="anim"){
+      toast("Animation läuft…");
+      return;
+    }
     if(netMode==="client" && (!myColor || !isMyTurn) && (phase==="placing_barricade" || phase==="need_move" || phase==="need_roll")){
       toast(!myColor ? "Bitte Farbe wählen" : "Du bist nicht dran");
       return;
@@ -1478,6 +1761,7 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
       if(netMode==="offline"){
         newGame();
       }
+      window.__DBG = { get state(){ return state; }, get board(){ return board; }, get phase(){ return phase; }, get netMode(){ return netMode; } };
       toast("Bereit. Online: Host/Beitreten.");
     }catch(err){
       showOverlay("Fehler","Board konnte nicht geladen werden", String(err.message||err));
