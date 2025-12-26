@@ -14,6 +14,7 @@
   const diceEl  = $("diceCube");
   const turnText= $("turnText");
   const turnDot = $("turnDot");
+  const turnPill = document.querySelector(".turnPill");
   const boardInfo = $("boardInfo");
   const barrInfo  = $("barrInfo");
 
@@ -127,63 +128,15 @@
   let state=null;
 
   // ===== FX (safe, visual only) =====
+
+  // Turn UI helpers (visual only)
+  const TURN_EMOJI = { red:"🔴", blue:"🔵", green:"🟢", yellow:"🟡" };
+
+  // Landing FX (visual only)
+  let landFxs = [];
   let lastDiceFace = 0;
   let lastMoveFx = null;
   let moveGhostFx = null;
-  let kickFlyFxs = [];
-  let impactFxs = [];
-  let powFxs = [];
-  let shakeFx = null;
-  let animRaf = null;
-
-  // Ultra SFX (optional; fails silently if browser blocks audio)
-  let _audioCtx = null;
-  function playKickSfx(){
-    try{
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if(!AC) return;
-      if(!_audioCtx) _audioCtx = new AC();
-      if(_audioCtx.state === "suspended") {
-        // resume best-effort (requires user gesture; kicks happen after a move click anyway)
-        _audioCtx.resume().catch(()=>{});
-      }
-      const now = _audioCtx.currentTime;
-      const o = _audioCtx.createOscillator();
-      const g = _audioCtx.createGain();
-      o.type = "square";
-      o.frequency.setValueAtTime(220, now);
-      o.frequency.exponentialRampToValueAtTime(110, now + 0.12);
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.22, now + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
-      o.connect(g); g.connect(_audioCtx.destination);
-      o.start(now);
-      o.stop(now + 0.2);
-    }catch(_e){}
-  }
-
-  // Keep drawing while FX are alive (prevents "animation only updates when something else re-draws")
-  function hasLiveFxs(now){
-    if(shakeFx) return true;
-    if(kickFlyFxs && kickFlyFxs.length) return true;
-    if(impactFxs && impactFxs.length) return true;
-    if(powFxs && powFxs.length) return true;
-    if(lastMoveFx && now - lastMoveFx.t0 < 900) return true;
-    if(moveGhostFx && moveGhostFx.pts && now - moveGhostFx.t0 < moveGhostFx.dur) return true;
-    return false;
-  }
-  function ensureAnimLoop(){
-    if(animRaf) return;
-    const tick = () => {
-      animRaf = null;
-      try{ draw(); }catch(_e){}
-      const now = performance.now();
-      if(hasLiveFxs(now)){
-        animRaf = requestAnimationFrame(tick);
-      }
-    };
-    animRaf = requestAnimationFrame(tick);
-  }
 
   // ===== Online =====
   const SERVER_URL = "wss://serverfinal-9t39.onrender.com";
@@ -200,11 +153,6 @@
   let reconnectTimer=null;
   let reconnectAttempt=0;
   let pendingIntents=[];
-
-  // Reconnect/Auto-start guards (verhindert „Reset“ durch Auto-Start beim Reconnect)
-  let hasRemoteState = false;      // true sobald snapshot/started angekommen ist
-  let startSent = false;           // host hat start bereits angefordert
-  let autoStartTimer = null;       // Start wird leicht verzögert
 
   function randId(len=10){
     const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -326,25 +274,13 @@ try{ ws = new WebSocket(SERVER_URL); }
       }
       if(type==="room_update"){
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
-
-        // ✅ Auto-start nur beim echten Spielbeginn – NICHT beim Reconnect.
-        // room_update kommt oft VOR snapshot -> sonst würde der Host das Spiel neu starten (Reset).
-        if(netMode==="host" && msg.canStart && !hasRemoteState && !startSent){
-          startSent = true;
-          clearTimeout(autoStartTimer);
-          autoStartTimer = setTimeout(() => {
-            if(!hasRemoteState && ws && ws.readyState===1){
-              wsSend({type:"start", ts:Date.now()});
-            }
-          }, 450);
+        // Auto-start when host and 2 players present
+        if(netMode==="host" && msg.canStart){
+          wsSend({type:"start", ts:Date.now()});
         }
         return;
       }
       if(type==="snapshot" || type==="started" || type==="place_barricade"){
-        // Sobald ein Snapshot/Started kommt, wissen wir: Spielstand existiert -> Auto-Start stoppen
-        hasRemoteState = true;
-        clearTimeout(autoStartTimer);
-
         if(msg.state) applyRemoteState(msg.state);
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
         return;
@@ -632,48 +568,40 @@ try{ ws = new WebSocket(SERVER_URL); }
     return null;
   }
 
-  // Create "ultra" kick fly FX for kicked pieces (visual only).
-  // We do NOT move real pieces here; server state stays authoritative.
-  function queueKickFlyFx(fromNodeId, pieceIds){
-    try{
-      const fromNode = nodeById.get(String(fromNodeId));
-      if(!fromNode) return;
-      const from = { x: fromNode.x, y: fromNode.y };
 
-      const housesByColor = { red:[], blue:[], green:[], yellow:[] };
-      for(const n of (board?.nodes||[])){
-        if(n.kind==="house" && n.flags?.houseColor){
-          const c = String(n.flags.houseColor);
-          if(housesByColor[c]) housesByColor[c].push(n);
-        }
-      }
+  // ===== Small animation helpers (visual only) =====
+  function easeOutQuad(t){ t = Math.max(0, Math.min(1, t)); return 1 - (1-t)*(1-t); }
 
-      for(const pid of (pieceIds||[])){
-        const color = parseColorFromPieceId(pid) || "red";
-        const pool = housesByColor[color] || [];
-        // choose a random house slot for show (visual only)
-        const toNode = pool.length ? pool[Math.floor(Math.random()*pool.length)] : (nodeById.get(String(startNodeId[color])) || fromNode);
-        const to = { x: toNode.x, y: toNode.y };
+  function buildGhostWeights(pts){
+    // weights based on segment length; last step gets extra drama
+    const segN = Math.max(0, (pts?.length||0) - 1);
+    const w = [];
+    for(let i=0;i<segN;i++){
+      const a=pts[i], b=pts[i+1];
+      const d = Math.hypot((b.x-a.x),(b.y-a.y));
+      w.push(Math.max(0.001, d));
+    }
+    if(segN>=1) w[segN-1] *= 1.7;      // last step slower
+    if(segN>=2) w[segN-2] *= 1.25;     // penultimate a bit slower
+    let sum = 0;
+    const cum = w.map(v => (sum += v));
+    return {w, cum, total: sum || 1};
+  }
 
-        // Big dramatic arc ("B" style): first fling high over the board, then land in house
-        const mid = {
-          x: (from.x + to.x)/2 + (Math.random()*260 - 130),
-          y: Math.min(from.y, to.y) - 340 - Math.random()*240
-        };
-
-        kickFlyFxs.push({
-          pieceId: String(pid),
-          color,
-          from,
-          mid,
-          to,
-          t0: performance.now(),
-          dur: 1350 + Math.random()*450,
-          turns: 5 + Math.floor(Math.random()*3),
-          wobble: 22 + Math.random()*12
-        });
-      }
-    }catch(_e){}
+  function sampleGhostAt(pts, weights, f){
+    // f: 0..1 across total weighted length
+    const segN = (pts?.length||0) - 1;
+    if(segN <= 0) return {x:pts?.[0]?.x||0, y:pts?.[0]?.y||0, idx:0, localT:0};
+    const w = weights?.w, cum = weights?.cum, total = weights?.total || 1;
+    const tlen = Math.max(0, Math.min(1, f)) * total;
+    let i = 0;
+    while(i < segN-1 && cum && cum[i] < tlen) i++;
+    const prev = i===0 ? 0 : (cum[i-1] || 0);
+    const segW = (w && w[i]) ? w[i] : 1;
+    const localT = segW ? ((tlen - prev) / segW) : 0;
+    const a = pts[i], b = pts[i+1];
+    const lt = Math.max(0, Math.min(1, localT));
+    return {x: a.x + (b.x-a.x)*lt, y: a.y + (b.y-a.y)*lt, idx:i, localT:lt};
   }
 
   function queueMoveFx(action){
@@ -692,16 +620,26 @@ try{ ws = new WebSocket(SERVER_URL); }
     if(pts.length < 2) return;
 
     const now = performance.now();
-    lastMoveFx = { color: color || "white", pts, t0: now, dur: 520 };
-    moveGhostFx = { color: color || "white", pts, t0: now, dur: 520 };
+    const steps = Math.max(1, pts.length - 1);
+    const dur = Math.min(980, 520 + Math.max(0, steps - 2) * 55); // a touch slower on longer paths
+    const weights = buildGhostWeights(pts);
 
-    // --- Kick-FX (crazy fly across board) ---
-    const kicked = Array.isArray(action.kickedPieces) ? action.kickedPieces.map(String) : [];
-    if(kicked.length){
-      const startNodeId = pts[pts.length-1]?.id;
-      if(startNodeId) queueKickFlyFx(startNodeId, kicked);
+    lastMoveFx = { color: color || "white", pts, t0: now, dur, weights, landed:false };
+    moveGhostFx = { color: color || "white", pts, t0: now, dur, weights };
+
+    // landing ring / dust (purely visual)
+    const endW = nodeById.get(pts[pts.length-1].id) || null;
+    if(endW){
+      landFxs.push({
+        x: endW.x, y: endW.y,
+        t0: now + dur,
+        dur: 280,
+        color: color || "white",
+        seed: Math.random()
+      });
+      // keep list short
+      if(landFxs.length > 18) landFxs = landFxs.slice(-18);
     }
-    ensureAnimLoop();
   }
 
   function showOverlay(title, sub, hint){
@@ -823,8 +761,24 @@ try{ ws = new WebSocket(SERVER_URL); }
 
   function updateTurnUI(){
     const c=state.currentPlayer;
-    turnText.textContent = state.winner ? `${PLAYER_NAME[state.winner]} gewinnt!` : `${PLAYER_NAME[c]} ist dran`;
+    const emoji = TURN_EMOJI[c] || "";
+    turnText.textContent = state.winner
+      ? `${PLAYER_NAME[state.winner]} gewinnt!`
+      : `${emoji} ${PLAYER_NAME[c]} ist am Zug`;
     turnDot.style.background = COLORS[c];
+
+    // (1) visual: glow ring + pulsing dot (no logic impact)
+    if(turnPill){
+      if(state.winner){
+        turnPill.classList.remove("activeTurnGlow");
+      }else{
+        turnPill.classList.add("activeTurnGlow");
+      }
+    }
+    if(turnDot){
+      if(state.winner) turnDot.classList.remove("turnPulse");
+      else turnDot.classList.add("turnPulse");
+    }
 
     const isMyTurn = (netMode==="offline") ? true : (myColor && myColor===state.currentPlayer);
     rollBtn.disabled = (phase!=="need_roll") || !isMyTurn;
@@ -1144,27 +1098,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     const rect=canvas.getBoundingClientRect();
     ctx.clearRect(0,0,rect.width,rect.height);
 
-    // Ultra: short screen shake (visual only)
-    const nowFx = performance.now();
-    let shx = 0, shy = 0;
-    if(shakeFx){
-      const age = nowFx - shakeFx.t0;
-      if(age >= shakeFx.dur){
-        shakeFx = null;
-      }else{
-        const t = age / shakeFx.dur;
-        const a = (1 - t);
-        // deterministic-ish wiggle (no Math.random spam)
-        const f = 22;
-        shx = Math.sin((age/1000) * Math.PI * f) * shakeFx.amp * a;
-        shy = Math.cos((age/1000) * Math.PI * (f*0.9)) * shakeFx.amp * a;
-      }
-    }
-
-    // Outer transform so *everything* (grid/edges/nodes) shakes together
-    ctx.save();
-    if(shx || shy) ctx.translate(shx, shy);
-
     // grid
     const grid=Math.max(10,(board.ui?.gridSize||20))*view.s;
     ctx.save();
@@ -1187,6 +1120,7 @@ try{ ws = new WebSocket(SERVER_URL); }
     ctx.restore();
 
     // (109) last move trail + (8) destination glow
+    const nowFx = performance.now();
     if(lastMoveFx && lastMoveFx.pts && nowFx - lastMoveFx.t0 < 900){
       const age = (nowFx - lastMoveFx.t0);
       const a = Math.max(0, 1 - age/900);
@@ -1213,14 +1147,19 @@ try{ ws = new WebSocket(SERVER_URL); }
     // (7) ghost piece sliding along path (visual only)
     if(moveGhostFx && moveGhostFx.pts && nowFx - moveGhostFx.t0 < moveGhostFx.dur){
       const t = (nowFx - moveGhostFx.t0) / moveGhostFx.dur;
-      const nseg = moveGhostFx.pts.length-1;
-      const f = Math.max(0, Math.min(1, t));
-      const idx = Math.min(nseg-1, Math.floor(f * nseg));
-      const localT = (f * nseg) - idx;
-      const a = moveGhostFx.pts[idx];
-      const b = moveGhostFx.pts[idx+1];
-      const x = a.x + (b.x-a.x)*localT;
-      const y = a.y + (b.y-a.y)*localT;
+      const fRaw = Math.max(0, Math.min(1, t));
+      // weighted path timing + slightly eased finish (visual only)
+      const f = easeOutQuad(fRaw);
+      const sp = sampleGhostAt(moveGhostFx.pts, moveGhostFx.weights, f);
+      let x = sp.x;
+      let y = sp.y;
+
+      // tiny landing bounce on the very last part (visual only)
+      if (fRaw > 0.86){
+        const u = Math.max(0, Math.min(1, (fRaw - 0.86) / 0.14));
+        const bounce = Math.sin(u * Math.PI) * (1-u) * 6;
+        y -= bounce;
+      }
       const col = COLORS[moveGhostFx.color] || moveGhostFx.color || 'rgba(255,255,255,0.9)';
       ctx.save();
       ctx.globalAlpha = 0.75 * (1 - f*0.35);
@@ -1235,120 +1174,46 @@ try{ ws = new WebSocket(SERVER_URL); }
       ctx.beginPath();
       ctx.arc(x, y, rr, 0, Math.PI*2);
       ctx.fill(); ctx.stroke();
-      ctx.restore();
-
-    // (13B) crazy kicked piece fly across the whole board (visual only)
-    if(kickFlyFxs && kickFlyFxs.length){
+      
+    // (7.1) landing ring + dust (visual only)
+    if(landFxs && landFxs.length){
       const alive=[];
-      for(const fx of kickFlyFxs){
-        const age = (nowFx - fx.t0);
-        const tRaw = age / fx.dur;
-        if(tRaw >= 1){
-          // impact pulse (ultra)
-          impactFxs.push({x:fx.to.x, y:fx.to.y, color:fx.color, t0: nowFx, dur: 320});
-
-          // comic "POW" bubble
-          const POW_WORDS = ["POW!","BAM!","K.O.!","WUSCH!","BOING!"];
-          powFxs.push({
-            x: fx.to.x,
-            y: fx.to.y,
-            text: POW_WORDS[Math.floor(Math.random()*POW_WORDS.length)],
-            t0: nowFx,
-            dur: 520
-          });
-
-          // tiny screen shake
-          shakeFx = { t0: nowFx, dur: 160, amp: 10 };
-
-          // optional sfx
-          playKickSfx();
-          continue;
-        }
-        alive.push(fx);
-
-        const t = Math.max(0, Math.min(1, tRaw));
-        const te = easeOutCubic(t);
-        const pW = quadBezier(fx.from, fx.mid, fx.to, te);
-
-        // wobble for "crazy"
-        const w = Math.sin(te * Math.PI * 2) * fx.wobble;
-        const p = worldToScreen({x:pW.x + w, y:pW.y});
-
-        const ang = te * fx.turns * Math.PI * 2;
-
-        // trail (ghosts)
-        for(let i=10;i>=1;i--){
-          const tt = Math.max(0, te - i*0.06);
-          const ppW = quadBezier(fx.from, fx.mid, fx.to, tt);
-          const ww = Math.sin(tt * Math.PI * 2) * fx.wobble;
-          const pp = worldToScreen({x:ppW.x + ww, y:ppW.y});
-          ctx.save();
-          ctx.globalAlpha = 0.04 * (1 - i/10);
-          ctx.fillStyle = (COLORS[fx.color] || fx.color);
-          ctx.beginPath();
-          ctx.arc(pp.x, pp.y, 10 * (1 - i/14), 0, Math.PI*2);
-          ctx.fill();
-          ctx.restore();
-        }
-
-        // main flying piece
-        const r = 16;
+      for(const fx of landFxs){
+        const age = nowFx - fx.t0;
+        if(age < -40) { alive.push(fx); continue; } // scheduled for future
+        if(age >= fx.dur) continue;
+        const p = worldToScreen({x:fx.x, y:fx.y});
+        const u = Math.max(0, Math.min(1, age / fx.dur));
+        const a = 1 - u;
         const col = COLORS[fx.color] || fx.color || "rgba(255,255,255,0.9)";
         ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(ang);
-        const squash = 1 + Math.sin(te*Math.PI) * 0.18;
-        ctx.scale(squash, 1/squash);
-
-        const g = ctx.createRadialGradient(-r*0.2, -r*0.2, r*0.2, 0, 0, r*1.2);
-        g.addColorStop(0, "rgba(255,255,255,0.55)");
-        g.addColorStop(0.35, col);
-        g.addColorStop(1, "rgba(0,0,0,0.28)");
-        ctx.fillStyle = g;
-        ctx.strokeStyle = "rgba(0,0,0,0.75)";
-        ctx.lineWidth = 2.2;
-        ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill(); ctx.stroke();
-
-        ctx.fillStyle="rgba(0,0,0,0.55)";
-        ctx.beginPath(); ctx.arc(0,0,r*0.55,0,Math.PI*2); ctx.fill();
-        ctx.fillStyle="rgba(230,237,243,0.95)";
-        ctx.font="bold 13px system-ui";
-        ctx.textAlign="center"; ctx.textBaseline="middle";
-        const label = String(fx.pieceId).match(/_(\d+)$/)?.[1] || "";
-        ctx.fillText(label, 0, 0);
-
-        ctx.restore();
-      }
-      kickFlyFxs = alive;
-
-      // screen shake on impacts (tiny)
-      if(impactFxs.length){
-        // just re-draw next frame
-        ensureAnimLoop();
-      }
-    }
-
-    // impact pulses
-    if(impactFxs && impactFxs.length){
-      const keep=[];
-      for(const fx of impactFxs){
-        const age=(nowFx - fx.t0);
-        if(age>fx.dur) continue;
-        keep.push(fx);
-        const t=age/fx.dur;
-        const a=(1-t);
-        const p=worldToScreen({x:fx.x, y:fx.y});
-        ctx.save();
-        ctx.globalAlpha=0.55*a;
-        ctx.strokeStyle=(COLORS[fx.color] || fx.color);
-        ctx.lineWidth=4;
+        ctx.globalAlpha = 0.55 * a;
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.arc(p.x,p.y, 18 + t*34, 0, Math.PI*2);
+        ctx.arc(p.x, p.y, 10 + u*18, 0, Math.PI*2);
         ctx.stroke();
+
+        // tiny dust specks
+        ctx.globalAlpha = 0.28 * a;
+        ctx.fillStyle = "rgba(255,255,255,0.9)";
+        const seed = fx.seed || 0.123;
+        for(let i=0;i<7;i++){
+          const ang = (seed*999 + i*0.9) % (Math.PI*2);
+          const rr = 6 + u*22 + i*0.8;
+          const sx = p.x + Math.cos(ang) * rr;
+          const sy = p.y + Math.sin(ang) * rr;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 2.2 - u*1.2, 0, Math.PI*2);
+          ctx.fill();
+        }
         ctx.restore();
+        alive.push(fx);
       }
-      impactFxs=keep;
+      landFxs = alive;
     }
+
+ctx.restore();
     }
 
     const r=Math.max(16, board.ui?.nodeRadius || 20);
@@ -1428,50 +1293,6 @@ try{ ws = new WebSocket(SERVER_URL); }
         }
       }
     }
-
-    // Ultra: POW text bubbles (draw on top)
-    if(powFxs && powFxs.length){
-      const keep=[];
-      for(const fx of powFxs){
-        const age = nowFx - fx.t0;
-        if(age > fx.dur) continue;
-        keep.push(fx);
-        const t = Math.max(0, Math.min(1, age / fx.dur));
-        const a = 1 - t;
-        const p = worldToScreen({x:fx.x, y:fx.y});
-        const rise = t * 28;
-        ctx.save();
-        ctx.globalAlpha = 0.95 * a;
-        ctx.translate(p.x, p.y - 26 - rise);
-        const sc = 0.9 + Math.sin(t*Math.PI) * 0.25;
-        ctx.scale(sc, sc);
-        // bubble
-        ctx.fillStyle = "rgba(0,0,0,0.65)";
-        ctx.strokeStyle = "rgba(255,255,255,0.65)";
-        ctx.lineWidth = 3;
-        const w = 92, h = 46, rr = 14;
-        ctx.beginPath();
-        ctx.moveTo(-w/2+rr, -h/2);
-        ctx.arcTo(w/2, -h/2, w/2, h/2, rr);
-        ctx.arcTo(w/2, h/2, -w/2, h/2, rr);
-        ctx.arcTo(-w/2, h/2, -w/2, -h/2, rr);
-        ctx.arcTo(-w/2, -h/2, w/2, -h/2, rr);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        // text
-        ctx.fillStyle = "rgba(255,255,255,0.95)";
-        ctx.font = "900 22px system-ui";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(fx.text || "POW!", 0, 2);
-        ctx.restore();
-      }
-      powFxs = keep;
-    }
-
-    // end outer shake transform
-    ctx.restore();
   }
 
   // ===== Interaction =====
@@ -1610,25 +1431,20 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
   });
 
   endBtn.addEventListener("click", () => {
-    // Online: Server-autorisiert beenden (Host+Client gleich)
     if(netMode!=="offline"){
-      if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
-      wsSend({type:"end_turn", ts:Date.now()});
+      toast("Zug beenden macht der Server automatisch nach dem Zug");
       return;
     }
-    // Offline: lokal
     if(phase!=="placing_barricade" && phase!=="game_over") nextPlayer();
     if(netMode==="host") broadcastState("state");
   });
 
   if(skipBtn) skipBtn.addEventListener("click", () => {
-    // Online: Server-autorisiert skippen (Host+Client gleich)
-    if(netMode!=="offline"){
-      if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
-      wsSend({type:"skip_turn", ts:Date.now()});
-      return;
+    if(netMode==="client"){
+      if(!myColor){ toast("Bitte Farbe wählen"); return; }
+      if(myColor!==state.currentPlayer){ toast("Du bist nicht dran"); return; }
+      sendIntent({type:"skip"}); return;
     }
-    // Offline: lokal
     if(phase!=="placing_barricade" && phase!=="game_over"){ toast("Runde ausgesetzt"); nextPlayer(); }
     if(netMode==="host") broadcastState("state");
   });
