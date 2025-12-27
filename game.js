@@ -421,8 +421,7 @@ try{ ws = new WebSocket(SERVER_URL); }
       else phase="need_roll";
 
       // show dice
-      if(state.dice!=null) setDiceFaceAnimated(Number(state.dice)); // Phase 1: do not clear on null
-      else setDiceFaceAnimated(0, false);
+      setDiceFaceAnimated(state.dice==null ? 0 : Number(state.dice));
       if(barrInfo) barrInfo.textContent = String(state.barricades.size);
 
       // in online mode we let the server validate moves, so don't compute legalTargets
@@ -533,11 +532,10 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
   }
 
-  function setDiceFaceAnimated(v, allowZero=false){
+  function setDiceFaceAnimated(v){
     if(!diceEl) return;
     const face = (v>=1 && v<=6) ? v : 0;
     if(face===0){
-      if(!allowZero) return; // Phase 1: keep last face visible unless explicitly cleared
       diceEl.dataset.face = "0";
       lastDiceFace = 0;
       return;
@@ -779,7 +777,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     /* dice handled via data-face */
     legalTargets=[]; setPlacingChoices([]);
     selected=null; legalMovesAll=[]; legalMovesByPiece=new Map();
-    setDiceFaceAnimated(0, true); // Phase 1: clear only on new game
     updateTurnUI(); draw();
     try{ ensureFittedOnce(); }catch(_e){}
   }
@@ -802,7 +799,7 @@ try{ ws = new WebSocket(SERVER_URL); }
   function endTurn(){
     if(state && state.dice === 6 && !state.winner){
       state.dice = null;
-      setDiceFaceAnimated(0, false);
+      setDiceFaceAnimated(0);
 
       legalTargets=[]; setPlacingChoices([]);
       selected=null; legalMovesAll=[]; legalMovesByPiece=new Map();
@@ -819,7 +816,7 @@ try{ ws = new WebSocket(SERVER_URL); }
     const idx = order.indexOf(state.currentPlayer);
     state.currentPlayer = order[(idx+1)%order.length];
     state.dice=null;
-    setDiceFaceAnimated(0, false);
+    setDiceFaceAnimated(0);
     legalTargets=[]; setPlacingChoices([]);
     selected=null; legalMovesAll=[]; legalMovesByPiece=new Map();
     setPhase("need_roll");
