@@ -81,6 +81,11 @@
   let animatingMove = false;
 
 
+
+  // ===== Online Move Animation (field-by-field) =====
+  // Server sendet bei "move" ein action.path (Liste von Node-IDs).
+  // Wir animieren die *eigentliche Figur* Schritt für Schritt – ohne Server-Logik zu ändern.
+  let moveAnim = null; // {pieceId,color,pts:[{x,y}], t0, stepMs, dur}
   const AUTO_CENTER_ALWAYS = true; // immer beim Start zentrieren (überschreibt gespeicherte Ansicht)
   let pointerMap=new Map(), isPanning=false, panStart=null;
 
@@ -291,7 +296,7 @@ try{ ws = new WebSocket(SERVER_URL); }
       }
       if(type==="move"){
         // (7/8/109) animate path + destination glow
-        if(msg.action) queueMoveFx(msg.action);
+        if(msg.action) { queueMoveFx(msg.action); startMoveAnim(msg.action); }
         if(msg.state) applyRemoteState(msg.state);
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
         return;
@@ -416,7 +421,7 @@ try{ ws = new WebSocket(SERVER_URL); }
       else phase="need_roll";
 
       // show dice
-      if(state.dice!=null) setDiceFaceAnimated(Number(state.dice));
+      setDiceFaceAnimated(state.dice==null ? 0 : Number(state.dice));
       if(barrInfo) barrInfo.textContent = String(state.barricades.size);
 
       // in online mode we let the server validate moves, so don't compute legalTargets
@@ -456,7 +461,7 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
 
     if(barrInfo) barrInfo.textContent = String(state.barricades?.size ?? 0);
-    if(state.dice!=null) setDiceFaceAnimated(Number(state.dice));
+    setDiceFaceAnimated(state.dice==null ? 0 : Number(state.dice));
     updateTurnUI(); draw();
       ensureFittedOnce();
   }
@@ -527,19 +532,12 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
   }
 
-  function setDiceFaceAnimated(v, opts={}){
+  function setDiceFaceAnimated(v){
     if(!diceEl) return;
     const face = (v>=1 && v<=6) ? v : 0;
-
-    // ===== PHASE 1 (Dice-Stability) =====
-    // Standard: letzte Zahl bleibt sichtbar. Wir setzen NIE automatisch auf 0 zurück,
-    // weil sonst bei snapshot/move/turnwechsel Flackern entsteht.
-    // Nur wenn explizit erlaubt (kompletter Reset/NewGame) darf 0 angezeigt werden.
     if(face===0){
-      if(opts && opts.allowZero){
-        diceEl.dataset.face = "0";
-        lastDiceFace = 0;
-      }
+      diceEl.dataset.face = "0";
+      lastDiceFace = 0;
       return;
     }
 
@@ -591,6 +589,80 @@ try{ ws = new WebSocket(SERVER_URL); }
     lastMoveFx = { color: color || "white", pts, t0: now, dur: 520 };
     moveGhostFx = { color: color || "white", pts, t0: now, dur: 520 };
   }
+
+
+  function startMoveAnim(action){
+    if(!action || !board) return;
+    const path = Array.isArray(action.path) ? action.path.map(String) : [];
+    if(path.length < 2) return;
+
+    const color = parseColorFromPieceId(action.pieceId) || null;
+
+    const pts=[];
+    for(const id of path){
+      const n = nodeById.get(String(id));
+      if(!n) continue;
+      // world coords reichen – wir transformieren im draw
+      pts.push({x:n.x, y:n.y, id:String(id)});
+    }
+    if(pts.length < 2) return;
+
+    const stepMs = 260; // Tempo pro Feld
+    moveAnim = {
+      pieceId: String(action.pieceId||""),
+      color: color || "white",
+      pts,
+      t0: performance.now(),
+      stepMs,
+      dur: (pts.length-1) * stepMs
+    };
+    animatingMove = true;
+    updateTurnUI(); // Buttons sperren während Animation
+    requestAnimationFrame(tickMoveAnim);
+  }
+
+  function tickMoveAnim(){
+    if(!moveAnim){ animatingMove=false; updateTurnUI(); return; }
+    const now = performance.now();
+    const age = now - moveAnim.t0;
+    if(age >= moveAnim.dur){
+      moveAnim = null;
+      animatingMove = false;
+      updateTurnUI();
+      draw();
+      return;
+    }
+    draw();
+    requestAnimationFrame(tickMoveAnim);
+  }
+
+  function movingPieceKey(){
+    if(!moveAnim || !state || !state.pieces) return null;
+    for(const c of PLAYERS){
+      const arr = state.pieces[c] || [];
+      for(let i=0;i<arr.length;i++){
+        if(arr[i] && arr[i].pieceId && String(arr[i].pieceId)===String(moveAnim.pieceId)){
+          return {color:c, index:i};
+        }
+      }
+    }
+    return null;
+  }
+
+  function moveAnimPosition(){
+    if(!moveAnim) return null;
+    const now = performance.now();
+    const age = Math.max(0, now - moveAnim.t0);
+    const seg = Math.min(moveAnim.pts.length-2, Math.floor(age / moveAnim.stepMs));
+    const t = (age - seg*moveAnim.stepMs) / moveAnim.stepMs; // 0..1
+    const a = moveAnim.pts[seg];
+    const b = moveAnim.pts[seg+1];
+    const x = a.x + (b.x-a.x)*t;
+    const y = a.y + (b.y-a.y)*t;
+    const bounce = Math.sin(Math.PI * t);
+    return {x,y,bounce};
+  }
+
 
   function showOverlay(title, sub, hint){
     overlayTitle.textContent=title;
@@ -694,9 +766,6 @@ try{ ws = new WebSocket(SERVER_URL); }
       winner:null
     };
 
-    // Phase 1: On a full new game/reset we DO clear the dice face.
-    setDiceFaceAnimated(0, { allowZero: true });
-
     // 🔥 BRUTAL: Barikaden starten auf ALLEN RUN-Feldern (außer Ziel)
     for(const id of runNodes){
       if(id===goalNodeId) continue;
@@ -718,9 +787,9 @@ try{ ws = new WebSocket(SERVER_URL); }
     turnDot.style.background = COLORS[c];
 
     const isMyTurn = (netMode==="offline") ? true : (myColor && myColor===state.currentPlayer);
-    rollBtn.disabled = (phase!=="need_roll") || !isMyTurn;
-    endBtn.disabled  = (phase==="need_roll"||phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
-    if(skipBtn) skipBtn.disabled = (phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
+    rollBtn.disabled = animatingMove || (phase!=="need_roll") || !isMyTurn;
+    endBtn.disabled  = animatingMove || (phase==="need_roll"||phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
+    if(skipBtn) skipBtn.disabled = animatingMove || (phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
 
     if(colorPickWrap){
       colorPickWrap.style.display = (netMode!=="offline" && !myColor) ? "block" : "none";
@@ -730,7 +799,7 @@ try{ ws = new WebSocket(SERVER_URL); }
   function endTurn(){
     if(state && state.dice === 6 && !state.winner){
       state.dice = null;
-      // Phase 1: keep last dice face visible until next roll
+      setDiceFaceAnimated(0);
 
       legalTargets=[]; setPlacingChoices([]);
       selected=null; legalMovesAll=[]; legalMovesByPiece=new Map();
@@ -747,7 +816,7 @@ try{ ws = new WebSocket(SERVER_URL); }
     const idx = order.indexOf(state.currentPlayer);
     state.currentPlayer = order[(idx+1)%order.length];
     state.dice=null;
-    // Phase 1: keep last dice face visible until next roll
+    setDiceFaceAnimated(0);
     legalTargets=[]; setPlacingChoices([]);
     selected=null; legalMovesAll=[]; legalMovesByPiece=new Map();
     setPhase("need_roll");
@@ -1160,9 +1229,12 @@ try{ ws = new WebSocket(SERVER_URL); }
 
     // pieces stacked
     const stacks=new Map();
+    const movingKey = movingPieceKey();
+
     for(const c of PLAYERS){
       const pcs=state.pieces[c];
       for(let i=0;i<pcs.length;i++){
+        if(movingKey && movingKey.color===c && movingKey.index===i) continue; // während Animation nicht in Stack zeichnen
         const pos=pcs[i].pos;
         if(typeof pos==="string" && adj.has(pos)){
           if(!stacks.has(pos)) stacks.set(pos, []);
@@ -1174,6 +1246,29 @@ try{ ws = new WebSocket(SERVER_URL); }
       const n=nodeById.get(nodeId); if(!n) continue;
       const s=worldToScreen(n);
       drawStack(arr, s.x, s.y, r);
+    }
+
+    // --- draw moving piece on top (field-by-field) ---
+    const mp = moveAnimPosition();
+    if(mp && moveAnim){
+      const ss = worldToScreen({x:mp.x, y:mp.y});
+      const col = COLORS[moveAnim.color] || moveAnim.color || "rgba(255,255,255,0.9)";
+      const rr = r*0.95;
+      const yOff = - (8 + rr*0.25) * mp.bounce; // leichter Sprung
+      const x = ss.x, y = ss.y + yOff;
+
+      ctx.save();
+      const g = ctx.createRadialGradient(x - rr*0.22, y - rr*0.22, rr*0.2, x, y, rr*1.15);
+      g.addColorStop(0, "rgba(255,255,255,0.45)");
+      g.addColorStop(0.4, col);
+      g.addColorStop(1, "rgba(0,0,0,0.25)");
+      ctx.fillStyle = g;
+      ctx.strokeStyle = "rgba(0,0,0,0.7)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(x, y, rr, 0, Math.PI*2);
+      ctx.fill(); ctx.stroke();
+      ctx.restore();
     }
 
     if(selected){
@@ -1229,6 +1324,8 @@ try{ ws = new WebSocket(SERVER_URL); }
 
     const wp=screenToWorld(sp);
     const hit=hitNode(wp);
+
+    if(animatingMove){ toast("Animation läuft…"); return; }
 
     const isMyTurn = (netMode!=="client") || (myColor && myColor===state.currentPlayer);
     if(netMode==="client" && (!myColor || !isMyTurn) && (phase==="placing_barricade" || phase==="need_move" || phase==="need_roll")){
@@ -1313,6 +1410,7 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
 
   // ===== Buttons =====
   rollBtn.addEventListener("click", () => {
+    if(animatingMove){ toast("Warte bis die Figur fertig gelaufen ist"); return; }
     if(netMode!=="offline"){
       if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
       // server checks turn
