@@ -66,6 +66,13 @@
             <button id="startBtn" class="btn" disabled>Spiel starten</button>
           </div>
 
+          <!-- Host-Tools: Save/Load (nur sichtbar für Host) -->
+          <div id="hostTools" class="row" style="margin-top:8px; display:none;">
+            <button id="saveBtn" class="btn">Save</button>
+            <button id="loadBtn" class="btn">Load</button>
+            <input id="loadFile" type="file" accept="application/json" style="display:none" />
+          </div>
+
           <div class="kv"><span>Status</span><span id="netStatus" class="ok">Offline</span></div>
           <div class="kv"><span>Du bist</span><span id="myColor">–</span></div>
           <div class="kv"><span>Aktive Spieler</span><span id="netPlayers">–</span></div>
