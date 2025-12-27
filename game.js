@@ -1,3 +1,5 @@
+let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
+
 (() => {
   const $ = (id) => document.getElementById(id);
 
@@ -28,7 +30,6 @@
   const resetBtn= $("resetBtn");
   // Host tools (Save/Load) - host only
   const hostTools = $("hostTools");
-  const resumeBtn = $("resumeBtn");
   const saveBtn = $("saveBtn");
   const loadBtn = $("loadBtn");
   const loadFile = $("loadFile");
@@ -274,7 +275,6 @@
   function updateHostToolsUI(){
     const show = (netMode !== "offline") && isMeHost();
     if(hostTools) hostTools.style.display = show ? "flex" : "none";
-    if(resumeBtn) resumeBtn.disabled = !(show && ws && ws.readyState===1);
   }
 
   function scheduleReconnect(){
@@ -1394,13 +1394,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     if(state && state.started){ toast("Spiel läuft bereits"); return; }
     if(!netCanStart){ toast("Mindestens 2 Spieler nötig"); return; }
     wsSend({type:"start", ts:Date.now()});
-  });
-
-  // Host-only: Spiel fortsetzen (macht NICHTS anderes als Snapshot neu anfordern)
-  resumeBtn && resumeBtn.addEventListener("click", () => {
-    if(netMode!=="host"){ toast("Nur Host kann fortsetzen"); return; }
-    if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
-    wsSend({type:"resume", ts:Date.now()});
   });
 
   rollBtn.addEventListener("click", () => {
