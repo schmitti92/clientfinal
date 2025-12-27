@@ -1,13 +1,28 @@
 (() => {
   const $ = (id) => document.getElementById(id);
 
+  function debugLog(...args){
+    try{ console.log(...args); }catch(_e){}
+    const el = document.getElementById('debugLog');
+    if(el){
+      try{
+        el.textContent += args.map(a=>typeof a==='string'?a:JSON.stringify(a)).join(' ') + "\n";
+        el.scrollTop = el.scrollHeight;
+      }catch(_e){}
+    }
+  }
+
+
   // ===== UI refs =====
   const canvas = $("c");
   const ctx = canvas.getContext("2d");
   const toastEl = $("toast");
   const netBannerEl = $("netBanner");
+  const debugToggle = $("debugToggle");
+  const debugLogEl = $("debugLog");
 
   const rollBtn = $("rollBtn");
+  const startBtn = $("startBtn");
   const endBtn  = $("endBtn");
   const skipBtn = $("skipBtn");
   const resetBtn= $("resetBtn");
@@ -23,7 +38,6 @@
   const hostBtn = $("hostBtn");
   const joinBtn = $("joinBtn");
   const leaveBtn= $("leaveBtn");
-  const startBtn= $("startBtn");
   const netStatus = $("netStatus");
   const netPlayersEl = $("netPlayers");
   const myColorEl = $("myColor");
@@ -127,57 +141,39 @@
   let legalMovesByPiece=new Map();
   let state=null;
 
+  function clearLocalState(){
+    state = null;
+    legalMovesByPiece = new Map();
+    // UI reset
+    if(turnText) turnText.textContent = '–';
+    if(turnDot) turnDot.className = 'dot';
+    lastDiceFace = 0;
+    if(diceEl) diceEl.setAttribute('data-face','0');
+    updateStartButton();
+    draw();
+  }
+
   // ===== FX (safe, visual only) =====
   let lastDiceFace = 0;
   let lastMoveFx = null;
   let moveGhostFx = null;
 
-  // ===== Step-by-step piece animation (Hüpfen) =====
-  const MOVE_STEP_MS = 220; // Tempo pro Feld
-  let moveStepAnim = null; // {pieceId, path:[nodeId...], i, nextTs}
-  const pieceOverrides = new Map(); // pieceId -> nodeId (temporary while animating)
-
-
   // ===== Online =====
-  const SERVER_URL = "wss://serverfinal-ynbe.onrender.com";
+  const SERVER_URL = "wss://serverfinal-9t39.onrender.com";
   if(serverLabel) serverLabel.textContent = SERVER_URL;
 
   let ws=null;
-  let netMode="offline";    // offline | host | client
+  let netMode="offline";
+  let netCanStart=false;    // offline | host | client
   let roomCode="";
   let clientId="";
   let lastNetPlayers=[];
   let rosterById=new Map();
   let myColor=null;
 
-    // Host fallback: claim slots via banner buttons
-  if(netBannerEl && !netBannerEl.__claimHook){
-    netBannerEl.__claimHook = true;
-    netBannerEl.addEventListener("click", (e) => {
-      const t = e.target;
-      const color = t && t.dataset ? t.dataset.claimColor : null;
-      const pid   = t && t.dataset ? t.dataset.claimPlayerId : null;
-      if(!color || !pid) return;
-      e.preventDefault();
-      if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
-      wsSend({ type: "claim_color", color, playerId: pid, ts: Date.now() });
-    });
-  }
-
   let reconnectTimer=null;
   let reconnectAttempt=0;
   let pendingIntents=[];
-
-  // Start/Lobby state (online)
-  let netCanStart = false;     // kommt aus room_update
-  let gameStarted = false;     // true sobald ein snapshot/started mit state kommt
-
-  function updateStartBtn(){
-    if(!startBtn) return;
-    const can = (netMode==="host") && netCanStart && !gameStarted;
-    startBtn.disabled = !can;
-    startBtn.textContent = gameStarted ? "Spiel läuft" : "Spiel starten";
-  }
 
   function randId(len=10){
     const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -211,6 +207,7 @@
     if(myColorEl){
       myColorEl.textContent = myColor ? PLAYER_NAME[myColor] : "–";
       myColorEl.style.color = myColor ? COLORS[myColor] : "var(--muted)";
+    updateStartButton();
     }
     if(colorPickWrap){
       colorPickWrap.style.display = (netMode!=="offline" && !myColor) ? "block" : "none";
@@ -248,56 +245,15 @@
       });
       netPlayersEl.textContent = parts.join(" · ");
     }
-    updateClaimUI();
-
   }
 
-  function updateClaimUI(){
-    if(netMode==="offline") return;
-    if(!netBannerEl) return;
-
+  function updateStartButton(){
+    if(!startBtn) return;
     const me = rosterById.get(clientId);
-    const iAmHost = !!(me && me.isHost);
-
-    // Find connected spectators (no color)
-    const spectators = lastNetPlayers.filter(p => p && !p.color && p.connected);
-    const spec = spectators[0] || null;
-
-    // Find offline slots (red/blue reserved but disconnected)
-    const redHolder = lastNetPlayers.find(p => p && p.color==="red");
-    const blueHolder= lastNetPlayers.find(p => p && p.color==="blue");
-    const redOffline = !!(redHolder && !redHolder.connected);
-    const blueOffline= !!(blueHolder && !blueHolder.connected);
-
-    // Only host can claim, and only if someone without color is connected.
-    if(iAmHost && spec && (redOffline || blueOffline)){
-      const parts=[];
-      parts.push('<div style="display:flex;flex-direction:column;gap:8px;align-items:flex-start;">');
-      parts.push('<div><b>Reconnect-Notfall:</b> Slot zurückholen</div>');
-      parts.push('<div class="muted" style="font-size:12px;">Ein Spieler ist offline. Weise den Slot einem verbundenen Spieler ohne Farbe zu.</div>');
-      parts.push('<div style="display:flex;gap:8px;flex-wrap:wrap;">');
-      if(redOffline)  parts.push(`<button class="btn" data-claim-color="red" data-claim-player-id="${spec.id}">🔴 Rot zurückholen</button>`);
-      if(blueOffline) parts.push(`<button class="btn" data-claim-color="blue" data-claim-player-id="${spec.id}">🔵 Blau zurückholen</button>`);
-      parts.push('</div></div>');
-      showNetBannerHTML(parts.join(''));
-      return;
-    }
-
-    // If I'm a spectator, explain waiting
-    const iAmSpectator = !myColor;
-    const bothReserved = !!(redHolder && blueHolder);
-    const someoneOffline = redOffline || blueOffline;
-
-    if(iAmSpectator && bothReserved && someoneOffline && !iAmHost){
-      // hide color picker to avoid confusion
-      if(colorPickWrap) colorPickWrap.style.display = "none";
-      showNetBanner("Du bist verbunden, aber ohne Farbe. Warte: Host muss deinen Slot zurückholen.");
-      return;
-    }
-
-    // otherwise hide banner (unless other messages)
-    // only hide if it currently shows claim UI or waiting text
-    // keep banner if other parts use it
+    const amHost = !!(me && me.isHost);
+    const hasState = !!(state && state.started);
+    startBtn.disabled = !(amHost && netCanStart && !hasState);
+    startBtn.textContent = hasState ? 'Spiel läuft' : 'Spiel starten';
   }
 
   function scheduleReconnect(){
@@ -350,44 +306,37 @@ try{ ws = new WebSocket(SERVER_URL); }
       if(type==="room_update"){
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
         netCanStart = !!msg.canStart;
-        updateStartBtn();
+        updateStartButton();
         return;
       }
       if(type==="snapshot" || type==="started" || type==="place_barricade"){
-        gameStarted = !!msg.state;
-        updateStartBtn();
         if(msg.state) applyRemoteState(msg.state);
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
-        return;
-      }
-      if(type==="reset_done"){
-        // Server hat den Room-State gelöscht -> wir sind zurück in der Lobby
-        gameStarted = false;
-        netCanStart = false;
-        updateStartBtn();
-        setDiceFaceAnimated(0);
-        toast("Reset – Host muss jetzt wieder 'Spiel starten' drücken");
         return;
       }
       if(type==="roll"){
         // (108/26) small suspense + particles
         if(typeof msg.value==="number") setDiceFaceAnimated(msg.value);
-        if(msg.state){ gameStarted = true; updateStartBtn(); applyRemoteState(msg.state); }
+        if(msg.state) applyRemoteState(msg.state);
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
         return;
       }
       if(type==="move"){
-        // (7/8/109) animate path + destination glow + step-by-step hop
-        if(msg.state){ gameStarted = true; updateStartBtn(); applyRemoteState(msg.state); }
-        if(msg.action){
-          queueMoveFx(msg.action);
-          startMoveStepAnimation(msg.action);
-        }
+        // (7/8/109) animate path + destination glow
+        if(msg.action) queueMoveFx(msg.action);
+        if(msg.state) applyRemoteState(msg.state);
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
         return;
       }
       if(type==="error"){
-        toast(msg.message || "Server-Fehler");
+        const code = msg.code || "";
+        const message = msg.message || "Server-Fehler";
+        // If server has no running game state (e.g. after restart), unlock manual start.
+        if(code==="NO_STATE" || /Spiel nicht gestartet/i.test(message)){
+          debugLog("[server:NO_STATE]", code, message);
+          clearLocalState();
+        }
+        toast(message);
         return;
       }
       if(type==="pong") return;
@@ -514,7 +463,7 @@ try{ ws = new WebSocket(SERVER_URL); }
       legalMovesAll = [];
       legalMovesByPiece = new Map();
       placingChoices = [];
-      updateTurnUI(); draw();
+      updateTurnUI(); updateStartButton(); draw();
       ensureFittedOnce();
       return;
     }
@@ -547,7 +496,7 @@ try{ ws = new WebSocket(SERVER_URL); }
 
     if(barrInfo) barrInfo.textContent = String(state.barricades?.size ?? 0);
     setDiceFaceAnimated(state.dice==null ? 0 : Number(state.dice));
-    updateTurnUI(); draw();
+    updateTurnUI(); updateStartButton(); draw();
       ensureFittedOnce();
   }
 
@@ -584,11 +533,6 @@ try{ ws = new WebSocket(SERVER_URL); }
   function showNetBanner(text){
     if(!netBannerEl) return;
     netBannerEl.textContent = text || "";
-    netBannerEl.classList.add("show");
-  }
-  function showNetBannerHTML(html){
-    if(!netBannerEl) return;
-    netBannerEl.innerHTML = html || "";
     netBannerEl.classList.add("show");
   }
   function hideNetBanner(){
@@ -660,42 +604,7 @@ try{ ws = new WebSocket(SERVER_URL); }
     return null;
   }
 
-  
-function startMoveStepAnimation(action){
-  // animates the moving piece field-by-field using the server path
-  if(!action || !Array.isArray(action.path) || action.path.length < 2) return;
-  const pieceId = String(action.pieceId || "");
-  if(!pieceId) return;
-  const path = action.path.map(String).filter(id => nodeById.has(String(id)));
-  if(path.length < 2) return;
-
-  moveStepAnim = { pieceId, path, i:0, nextTs: performance.now() };
-  pieceOverrides.set(pieceId, path[0]);
-  requestAnimationFrame(tickMoveStepAnimation);
-}
-
-function tickMoveStepAnimation(now){
-  if(!moveStepAnim) return;
-  if(now < moveStepAnim.nextTs){
-    requestAnimationFrame(tickMoveStepAnimation);
-    return;
-  }
-  const {pieceId, path} = moveStepAnim;
-  const nextIndex = moveStepAnim.i + 1;
-  if(nextIndex >= path.length){
-    pieceOverrides.delete(pieceId);
-    moveStepAnim = null;
-    draw();
-    return;
-  }
-  pieceOverrides.set(pieceId, path[nextIndex]);
-  moveStepAnim.i = nextIndex;
-  moveStepAnim.nextTs = now + MOVE_STEP_MS;
-  draw();
-  requestAnimationFrame(tickMoveStepAnimation);
-}
-
-function queueMoveFx(action){
+  function queueMoveFx(action){
     if(!action || !board) return;
     const path = Array.isArray(action.path) ? action.path.map(String) : [];
     if(path.length < 2) return;
@@ -828,7 +737,7 @@ function queueMoveFx(action){
     /* dice handled via data-face */
     legalTargets=[]; setPlacingChoices([]);
     selected=null; legalMovesAll=[]; legalMovesByPiece=new Map();
-    updateTurnUI(); draw();
+    updateTurnUI(); updateStartButton(); draw();
     try{ ensureFittedOnce(); }catch(_e){}
   }
 
@@ -855,7 +764,7 @@ function queueMoveFx(action){
       legalTargets=[]; setPlacingChoices([]);
       selected=null; legalMovesAll=[]; legalMovesByPiece=new Map();
       setPhase("need_roll");
-      updateTurnUI(); draw();
+      updateTurnUI(); updateStartButton(); draw();
       toast("6! Nochmal würfeln");
       return;
     }
@@ -871,7 +780,7 @@ function queueMoveFx(action){
     legalTargets=[]; setPlacingChoices([]);
     selected=null; legalMovesAll=[]; legalMovesByPiece=new Map();
     setPhase("need_roll");
-    updateTurnUI(); draw();
+    updateTurnUI(); updateStartButton(); draw();
   }
 
   function rollDice(){
@@ -896,7 +805,7 @@ function queueMoveFx(action){
       return;
     }
     setPhase("need_move");
-    updateTurnUI(); draw();
+    updateTurnUI(); updateStartButton(); draw();
   }
 
   function pieceAtBoardNode(nodeId, color){
@@ -1026,7 +935,7 @@ function queueMoveFx(action){
       toast("Ziel erreicht!");
       checkWin();
       if(state.winner){
-        setPhase("game_over"); updateTurnUI(); draw();
+        setPhase("game_over"); updateTurnUI(); updateStartButton(); draw();
         showOverlay("🎉 Spiel vorbei", `${PLAYER_NAME[state.winner]} gewinnt!`, "Tippe Reset für ein neues Spiel.");
         return;
       }
@@ -1039,7 +948,7 @@ function queueMoveFx(action){
       if(barrInfo) barrInfo.textContent=String(state.barricades.size);
       setPhase("placing_barricade");
       computeBarricadePlacements();
-      updateTurnUI(); draw();
+      updateTurnUI(); updateStartButton(); draw();
       toast("Barikade eingesammelt – jetzt neu platzieren");
       return;
     }
@@ -1283,8 +1192,7 @@ function queueMoveFx(action){
     for(const c of PLAYERS){
       const pcs=state.pieces[c];
       for(let i=0;i<pcs.length;i++){
-        const pid = pcs[i].pieceId;
-        const pos=(pid && pieceOverrides.has(pid)) ? pieceOverrides.get(pid) : pcs[i].pos;
+        const pos=pcs[i].pos;
         if(typeof pos==="string" && adj.has(pos)){
           if(!stacks.has(pos)) stacks.set(pos, []);
           stacks.get(pos).push({color:c,index:i});
@@ -1433,6 +1341,20 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
   canvas.addEventListener("pointercancel", onPointerUp);
 
   // ===== Buttons =====
+  debugToggle && debugToggle.addEventListener("click", () => {
+    if(!debugLogEl) return;
+    const show = debugLogEl.style.display !== "block";
+    debugLogEl.style.display = show ? "block" : "none";
+  });
+
+  startBtn && startBtn.addEventListener("click", () => {
+    if(netMode!=="host"){ toast("Nur Host kann starten"); return; }
+    if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
+    if(state && state.started){ toast("Spiel läuft bereits"); return; }
+    if(!netCanStart){ toast("Mindestens 2 Spieler nötig"); return; }
+    wsSend({type:"start", ts:Date.now()});
+  });
+
   rollBtn.addEventListener("click", () => {
     if(netMode!=="offline"){
       if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
@@ -1445,25 +1367,20 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
   });
 
   endBtn.addEventListener("click", () => {
-    // Online: Server-autorisiert beenden (Host + Client gleich)
     if(netMode!=="offline"){
-      if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
-      wsSend({type:"end_turn", ts:Date.now()});
+      toast("Zug beenden macht der Server automatisch nach dem Zug");
       return;
     }
-    // Offline: lokal
     if(phase!=="placing_barricade" && phase!=="game_over") nextPlayer();
     if(netMode==="host") broadcastState("state");
   });
 
   if(skipBtn) skipBtn.addEventListener("click", () => {
-    // Online: Server-autorisiert skippen (Host + Client gleich)
-    if(netMode!=="offline"){
-      if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
-      wsSend({type:"skip_turn", ts:Date.now()});
-      return;
+    if(netMode==="client"){
+      if(!myColor){ toast("Bitte Farbe wählen"); return; }
+      if(myColor!==state.currentPlayer){ toast("Du bist nicht dran"); return; }
+      sendIntent({type:"skip"}); return;
     }
-    // Offline: lokal
     if(phase!=="placing_barricade" && phase!=="game_over"){ toast("Runde ausgesetzt"); nextPlayer(); }
     if(netMode==="host") broadcastState("state");
   });
@@ -1480,9 +1397,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
   // Online actions
   hostBtn.addEventListener("click", () => {
     netMode = "host";
-    netCanStart = false;
-    gameStarted = false;
-    updateStartBtn();
     clientId = clientId || ("H-" + randId(8));
     roomCode = normalizeRoomCode(roomCodeInp.value) || randId(6);
     roomCodeInp.value = roomCode;
@@ -1493,9 +1407,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
 
   joinBtn.addEventListener("click", () => {
     netMode = "client";
-    netCanStart = false;
-    gameStarted = false;
-    updateStartBtn();
     clientId = clientId || ("C-" + randId(8));
     roomCode = normalizeRoomCode(roomCodeInp.value);
     if(!roomCode){ toast("Bitte Raumcode eingeben"); return; }
@@ -1504,19 +1415,8 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     toast("Beitreten…");
   });
 
-  if(startBtn) startBtn.addEventListener("click", () => {
-    if(netMode!=="host"){ toast("Nur der Host kann starten"); return; }
-    if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
-    if(gameStarted){ toast("Spiel läuft bereits"); return; }
-    if(!netCanStart){ toast("Mindestens 2 Spieler nötig"); return; }
-    wsSend({type:"start", ts:Date.now()});
-  });
-
   leaveBtn.addEventListener("click", () => {
     netMode = "offline";
-    netCanStart = false;
-    gameStarted = false;
-    updateStartBtn();
     saveSession();
     disconnectWS();
     setNetPlayers([]);
