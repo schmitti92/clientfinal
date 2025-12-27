@@ -76,16 +76,7 @@
 
   // Camera
   let dpr=1, view={x:40,y:40,s:1,_fittedOnce:false};
-  // ===== Animation guard (prevents ReferenceError in some builds) =====
-  // Wird von Buttons/Pointer-Handlern abgefragt. Wenn keine Lauf-Animation aktiv ist, bleibt es false.
-  let animatingMove = false;
 
-
-
-  // ===== Online Move Animation (field-by-field) =====
-  // Server sendet bei "move" ein action.path (Liste von Node-IDs).
-  // Wir animieren die *eigentliche Figur* Schritt für Schritt – ohne Server-Logik zu ändern.
-  let moveAnim = null; // {pieceId,color,pts:[{x,y}], t0, stepMs, dur}
   const AUTO_CENTER_ALWAYS = true; // immer beim Start zentrieren (überschreibt gespeicherte Ansicht)
   let pointerMap=new Map(), isPanning=false, panStart=null;
 
@@ -139,6 +130,60 @@
   let lastDiceFace = 0;
   let lastMoveFx = null;
   let moveGhostFx = null;
+  let kickFlyFxs = [];
+  let impactFxs = [];
+  let powFxs = [];
+  let shakeFx = null;
+  let animRaf = null;
+
+  // Ultra SFX (optional; fails silently if browser blocks audio)
+  let _audioCtx = null;
+  function playKickSfx(){
+    try{
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if(!AC) return;
+      if(!_audioCtx) _audioCtx = new AC();
+      if(_audioCtx.state === "suspended") {
+        // resume best-effort (requires user gesture; kicks happen after a move click anyway)
+        _audioCtx.resume().catch(()=>{});
+      }
+      const now = _audioCtx.currentTime;
+      const o = _audioCtx.createOscillator();
+      const g = _audioCtx.createGain();
+      o.type = "square";
+      o.frequency.setValueAtTime(220, now);
+      o.frequency.exponentialRampToValueAtTime(110, now + 0.12);
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.exponentialRampToValueAtTime(0.22, now + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+      o.connect(g); g.connect(_audioCtx.destination);
+      o.start(now);
+      o.stop(now + 0.2);
+    }catch(_e){}
+  }
+
+  // Keep drawing while FX are alive (prevents "animation only updates when something else re-draws")
+  function hasLiveFxs(now){
+    if(shakeFx) return true;
+    if(kickFlyFxs && kickFlyFxs.length) return true;
+    if(impactFxs && impactFxs.length) return true;
+    if(powFxs && powFxs.length) return true;
+    if(lastMoveFx && now - lastMoveFx.t0 < 900) return true;
+    if(moveGhostFx && moveGhostFx.pts && now - moveGhostFx.t0 < moveGhostFx.dur) return true;
+    return false;
+  }
+  function ensureAnimLoop(){
+    if(animRaf) return;
+    const tick = () => {
+      animRaf = null;
+      try{ draw(); }catch(_e){}
+      const now = performance.now();
+      if(hasLiveFxs(now)){
+        animRaf = requestAnimationFrame(tick);
+      }
+    };
+    animRaf = requestAnimationFrame(tick);
+  }
 
   // ===== Online =====
   const SERVER_URL = "wss://serverfinal-9t39.onrender.com";
@@ -155,6 +200,11 @@
   let reconnectTimer=null;
   let reconnectAttempt=0;
   let pendingIntents=[];
+
+  // Reconnect/Auto-start guards (verhindert „Reset“ durch Auto-Start beim Reconnect)
+  let hasRemoteState = false;      // true sobald snapshot/started angekommen ist
+  let startSent = false;           // host hat start bereits angefordert
+  let autoStartTimer = null;       // Start wird leicht verzögert
 
   function randId(len=10){
     const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -276,13 +326,27 @@ try{ ws = new WebSocket(SERVER_URL); }
       }
       if(type==="room_update"){
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
-        // Auto-start when host and 2 players present
-        if(netMode==="host" && msg.canStart){
-          wsSend({type:"start", ts:Date.now()});
+
+        // ✅ Auto-start nur beim echten Spielbeginn – NICHT beim Reconnect.
+        // room_update kommt oft VOR snapshot -> sonst würde der Host das Spiel neu starten (Reset).
+        if(netMode==="host" && msg.canStart && !hasRemoteState && !startSent){
+          startSent = true;
+          clearTimeout(autoStartTimer);
+          autoStartTimer = setTimeout(() => {
+            if(!hasRemoteState && ws && ws.readyState===1){
+              wsSend({type:"start", ts:Date.now()});
+            }
+          }, 450);
         }
         return;
       }
       if(type==="snapshot" || type==="started" || type==="place_barricade"){
+        // Cancel any local step animation – server snapshot is authoritative.
+        if(animatingMove) cancelStepMove();
+        // Sobald ein Snapshot/Started kommt, wissen wir: Spielstand existiert -> Auto-Start stoppen
+        hasRemoteState = true;
+        clearTimeout(autoStartTimer);
+
         if(msg.state) applyRemoteState(msg.state);
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
         return;
@@ -295,10 +359,21 @@ try{ ws = new WebSocket(SERVER_URL); }
         return;
       }
       if(type==="move"){
-        // (7/8/109) animate path + destination glow
-        if(msg.action) { queueMoveFx(msg.action); startMoveAnim(msg.action); }
-        if(msg.state) applyRemoteState(msg.state);
-        if(Array.isArray(msg.players)) setNetPlayers(msg.players);
+        // Online move: animate REAL piece step-by-step using server-provided path (no rules changed).
+        // Fallback: if anything is missing, keep old behavior (FX + immediate apply).
+        const act = msg.action || null;
+
+        // Mark that a remote game is running (prevents host auto-start glitches)
+        hasRemoteState = true;
+        clearTimeout(autoStartTimer);
+
+        if(act && Array.isArray(act.path) && act.path.length){
+          startStepMove(act, msg.state || null, (Array.isArray(msg.players) ? msg.players : null));
+        }else{
+          if(act) queueMoveFx(act);
+          if(msg.state) applyRemoteState(msg.state);
+          if(Array.isArray(msg.players)) setNetPlayers(msg.players);
+        }
         return;
       }
       if(type==="error"){
@@ -466,6 +541,110 @@ try{ ws = new WebSocket(SERVER_URL); }
       ensureFittedOnce();
   }
 
+// ===== Step-by-step move animation (server path) =====
+function findLocalPieceById(pieceId){
+  const pid = String(pieceId||"");
+  if(!state || !state.pieces) return null;
+  for(const c of ["red","blue","green","yellow"]){
+    const arr = state.pieces[c];
+    if(!Array.isArray(arr)) continue;
+    for(let i=0;i<arr.length;i++){
+      if(arr[i] && String(arr[i].pieceId||"") === pid) return {color:c, index:i};
+    }
+  }
+  return null;
+}
+
+function cancelStepMove(){
+  if(moveStepTimer){ clearTimeout(moveStepTimer); moveStepTimer=null; }
+  animatingMove = false;
+  pendingRemoteState = null;
+  pendingPlayersList = null;
+}
+
+function startStepMove(action, finalState, playersList){
+  try{
+    if(!action || !Array.isArray(action.path) || !action.path.length){
+      if(finalState) applyRemoteState(finalState);
+      if(playersList) setNetPlayers(playersList);
+      return;
+    }
+
+    // cancel any previous animation
+    cancelStepMove();
+
+    // Visual FX stays (trail/ghost); real movement is below.
+    queueMoveFx(action);
+
+    const slot = findLocalPieceById(action.pieceId);
+    if(!slot){
+      // If we can't find the piece locally, don't risk desync: apply state immediately.
+      if(finalState) applyRemoteState(finalState);
+      if(playersList) setNetPlayers(playersList);
+      return;
+    }
+
+    const steps = action.path.map(String);
+
+    animatingMove = true;
+    pendingRemoteState = finalState || null;
+    pendingPlayersList = playersList || null;
+
+    // Tuning (E): slow enough to be clearly visible
+    const STEP_MS = 320;     // per field
+    const END_PAUSE = 260;   // pause on final field
+
+    let i = 0;
+
+    const doStep = () => {
+      if(!state || !state.pieces || !state.pieces[slot.color] || !state.pieces[slot.color][slot.index]){
+        finish(); return;
+      }
+
+      // Set real piece position for this frame
+      const nodeId = steps[Math.min(i, steps.length-1)];
+      state.pieces[slot.color][slot.index].pos = nodeId;
+
+      // Redraw immediately
+      updateTurnUI();
+      draw();
+      ensureAnimLoop();
+
+      i += 1;
+      if(i < steps.length){
+        moveStepTimer = setTimeout(doStep, STEP_MS);
+      }else{
+        moveStepTimer = setTimeout(finish, END_PAUSE);
+      }
+    };
+
+    const finish = () => {
+      moveStepTimer = null;
+      animatingMove = false;
+
+      // Apply authoritative final state (kicks, barricade pickup, turn change)
+      const fs = pendingRemoteState;
+      const pl = pendingPlayersList;
+
+      pendingRemoteState = null;
+      pendingPlayersList = null;
+
+      if(fs) applyRemoteState(fs);
+      if(pl) setNetPlayers(pl);
+
+      updateTurnUI();
+      draw();
+    };
+
+    doStep();
+  }catch(_e){
+    // Safety fallback: never break gameplay because of animation
+    cancelStepMove();
+    if(finalState) applyRemoteState(finalState);
+    if(playersList) setNetPlayers(playersList);
+  }
+}
+
   function serializeState(){
     const st = JSON.parse(JSON.stringify(state));
     if(state.barricades instanceof Set) st.barricades = Array.from(state.barricades);
@@ -570,6 +749,50 @@ try{ ws = new WebSocket(SERVER_URL); }
     return null;
   }
 
+  // Create "ultra" kick fly FX for kicked pieces (visual only).
+  // We do NOT move real pieces here; server state stays authoritative.
+  function queueKickFlyFx(fromNodeId, pieceIds){
+    try{
+      const fromNode = nodeById.get(String(fromNodeId));
+      if(!fromNode) return;
+      const from = { x: fromNode.x, y: fromNode.y };
+
+      const housesByColor = { red:[], blue:[], green:[], yellow:[] };
+      for(const n of (board?.nodes||[])){
+        if(n.kind==="house" && n.flags?.houseColor){
+          const c = String(n.flags.houseColor);
+          if(housesByColor[c]) housesByColor[c].push(n);
+        }
+      }
+
+      for(const pid of (pieceIds||[])){
+        const color = parseColorFromPieceId(pid) || "red";
+        const pool = housesByColor[color] || [];
+        // choose a random house slot for show (visual only)
+        const toNode = pool.length ? pool[Math.floor(Math.random()*pool.length)] : (nodeById.get(String(startNodeId[color])) || fromNode);
+        const to = { x: toNode.x, y: toNode.y };
+
+        // Big dramatic arc ("B" style): first fling high over the board, then land in house
+        const mid = {
+          x: (from.x + to.x)/2 + (Math.random()*260 - 130),
+          y: Math.min(from.y, to.y) - 340 - Math.random()*240
+        };
+
+        kickFlyFxs.push({
+          pieceId: String(pid),
+          color,
+          from,
+          mid,
+          to,
+          t0: performance.now(),
+          dur: 1350 + Math.random()*450,
+          turns: 5 + Math.floor(Math.random()*3),
+          wobble: 22 + Math.random()*12
+        });
+      }
+    }catch(_e){}
+  }
+
   function queueMoveFx(action){
     if(!action || !board) return;
     const path = Array.isArray(action.path) ? action.path.map(String) : [];
@@ -588,81 +811,15 @@ try{ ws = new WebSocket(SERVER_URL); }
     const now = performance.now();
     lastMoveFx = { color: color || "white", pts, t0: now, dur: 520 };
     moveGhostFx = { color: color || "white", pts, t0: now, dur: 520 };
-  }
 
-
-  function startMoveAnim(action){
-    if(!action || !board) return;
-    const path = Array.isArray(action.path) ? action.path.map(String) : [];
-    if(path.length < 2) return;
-
-    const color = parseColorFromPieceId(action.pieceId) || null;
-
-    const pts=[];
-    for(const id of path){
-      const n = nodeById.get(String(id));
-      if(!n) continue;
-      // world coords reichen – wir transformieren im draw
-      pts.push({x:n.x, y:n.y, id:String(id)});
+    // --- Kick-FX (crazy fly across board) ---
+    const kicked = Array.isArray(action.kickedPieces) ? action.kickedPieces.map(String) : [];
+    if(kicked.length){
+      const startNodeId = pts[pts.length-1]?.id;
+      if(startNodeId) queueKickFlyFx(startNodeId, kicked);
     }
-    if(pts.length < 2) return;
-
-    const stepMs = 260; // Tempo pro Feld
-    moveAnim = {
-      pieceId: String(action.pieceId||""),
-      color: color || "white",
-      pts,
-      t0: performance.now(),
-      stepMs,
-      dur: (pts.length-1) * stepMs
-    };
-    animatingMove = true;
-    updateTurnUI(); // Buttons sperren während Animation
-    requestAnimationFrame(tickMoveAnim);
+    ensureAnimLoop();
   }
-
-  function tickMoveAnim(){
-    if(!moveAnim){ animatingMove=false; updateTurnUI(); return; }
-    const now = performance.now();
-    const age = now - moveAnim.t0;
-    if(age >= moveAnim.dur){
-      moveAnim = null;
-      animatingMove = false;
-      updateTurnUI();
-      draw();
-      return;
-    }
-    draw();
-    requestAnimationFrame(tickMoveAnim);
-  }
-
-  function movingPieceKey(){
-    if(!moveAnim || !state || !state.pieces) return null;
-    for(const c of PLAYERS){
-      const arr = state.pieces[c] || [];
-      for(let i=0;i<arr.length;i++){
-        if(arr[i] && arr[i].pieceId && String(arr[i].pieceId)===String(moveAnim.pieceId)){
-          return {color:c, index:i};
-        }
-      }
-    }
-    return null;
-  }
-
-  function moveAnimPosition(){
-    if(!moveAnim) return null;
-    const now = performance.now();
-    const age = Math.max(0, now - moveAnim.t0);
-    const seg = Math.min(moveAnim.pts.length-2, Math.floor(age / moveAnim.stepMs));
-    const t = (age - seg*moveAnim.stepMs) / moveAnim.stepMs; // 0..1
-    const a = moveAnim.pts[seg];
-    const b = moveAnim.pts[seg+1];
-    const x = a.x + (b.x-a.x)*t;
-    const y = a.y + (b.y-a.y)*t;
-    const bounce = Math.sin(Math.PI * t);
-    return {x,y,bounce};
-  }
-
 
   function showOverlay(title, sub, hint){
     overlayTitle.textContent=title;
@@ -787,9 +944,16 @@ try{ ws = new WebSocket(SERVER_URL); }
     turnDot.style.background = COLORS[c];
 
     const isMyTurn = (netMode==="offline") ? true : (myColor && myColor===state.currentPlayer);
-    rollBtn.disabled = animatingMove || (phase!=="need_roll") || !isMyTurn;
-    endBtn.disabled  = animatingMove || (phase==="need_roll"||phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
-    if(skipBtn) skipBtn.disabled = animatingMove || (phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
+    rollBtn.disabled = (phase!=="need_roll") || !isMyTurn;
+    endBtn.disabled  = (phase==="need_roll"||phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
+    if(skipBtn) skipBtn.disabled = (phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
+
+    // While step animation is running, lock inputs (prevents double actions / desync)
+    if(animatingMove){
+      rollBtn.disabled = true;
+      endBtn.disabled  = true;
+      if(skipBtn) skipBtn.disabled = true;
+    }
 
     if(colorPickWrap){
       colorPickWrap.style.display = (netMode!=="offline" && !myColor) ? "block" : "none";
@@ -1104,6 +1268,27 @@ try{ ws = new WebSocket(SERVER_URL); }
     const rect=canvas.getBoundingClientRect();
     ctx.clearRect(0,0,rect.width,rect.height);
 
+    // Ultra: short screen shake (visual only)
+    const nowFx = performance.now();
+    let shx = 0, shy = 0;
+    if(shakeFx){
+      const age = nowFx - shakeFx.t0;
+      if(age >= shakeFx.dur){
+        shakeFx = null;
+      }else{
+        const t = age / shakeFx.dur;
+        const a = (1 - t);
+        // deterministic-ish wiggle (no Math.random spam)
+        const f = 22;
+        shx = Math.sin((age/1000) * Math.PI * f) * shakeFx.amp * a;
+        shy = Math.cos((age/1000) * Math.PI * (f*0.9)) * shakeFx.amp * a;
+      }
+    }
+
+    // Outer transform so *everything* (grid/edges/nodes) shakes together
+    ctx.save();
+    if(shx || shy) ctx.translate(shx, shy);
+
     // grid
     const grid=Math.max(10,(board.ui?.gridSize||20))*view.s;
     ctx.save();
@@ -1126,7 +1311,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     ctx.restore();
 
     // (109) last move trail + (8) destination glow
-    const nowFx = performance.now();
     if(lastMoveFx && lastMoveFx.pts && nowFx - lastMoveFx.t0 < 900){
       const age = (nowFx - lastMoveFx.t0);
       const a = Math.max(0, 1 - age/900);
@@ -1176,6 +1360,119 @@ try{ ws = new WebSocket(SERVER_URL); }
       ctx.arc(x, y, rr, 0, Math.PI*2);
       ctx.fill(); ctx.stroke();
       ctx.restore();
+
+    // (13B) crazy kicked piece fly across the whole board (visual only)
+    if(kickFlyFxs && kickFlyFxs.length){
+      const alive=[];
+      for(const fx of kickFlyFxs){
+        const age = (nowFx - fx.t0);
+        const tRaw = age / fx.dur;
+        if(tRaw >= 1){
+          // impact pulse (ultra)
+          impactFxs.push({x:fx.to.x, y:fx.to.y, color:fx.color, t0: nowFx, dur: 320});
+
+          // comic "POW" bubble
+          const POW_WORDS = ["POW!","BAM!","K.O.!","WUSCH!","BOING!"];
+          powFxs.push({
+            x: fx.to.x,
+            y: fx.to.y,
+            text: POW_WORDS[Math.floor(Math.random()*POW_WORDS.length)],
+            t0: nowFx,
+            dur: 520
+          });
+
+          // tiny screen shake
+          shakeFx = { t0: nowFx, dur: 160, amp: 10 };
+
+          // optional sfx
+          playKickSfx();
+          continue;
+        }
+        alive.push(fx);
+
+        const t = Math.max(0, Math.min(1, tRaw));
+        const te = easeOutCubic(t);
+        const pW = quadBezier(fx.from, fx.mid, fx.to, te);
+
+        // wobble for "crazy"
+        const w = Math.sin(te * Math.PI * 2) * fx.wobble;
+        const p = worldToScreen({x:pW.x + w, y:pW.y});
+
+        const ang = te * fx.turns * Math.PI * 2;
+
+        // trail (ghosts)
+        for(let i=10;i>=1;i--){
+          const tt = Math.max(0, te - i*0.06);
+          const ppW = quadBezier(fx.from, fx.mid, fx.to, tt);
+          const ww = Math.sin(tt * Math.PI * 2) * fx.wobble;
+          const pp = worldToScreen({x:ppW.x + ww, y:ppW.y});
+          ctx.save();
+          ctx.globalAlpha = 0.04 * (1 - i/10);
+          ctx.fillStyle = (COLORS[fx.color] || fx.color);
+          ctx.beginPath();
+          ctx.arc(pp.x, pp.y, 10 * (1 - i/14), 0, Math.PI*2);
+          ctx.fill();
+          ctx.restore();
+        }
+
+        // main flying piece
+        const r = 16;
+        const col = COLORS[fx.color] || fx.color || "rgba(255,255,255,0.9)";
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(ang);
+        const squash = 1 + Math.sin(te*Math.PI) * 0.18;
+        ctx.scale(squash, 1/squash);
+
+        const g = ctx.createRadialGradient(-r*0.2, -r*0.2, r*0.2, 0, 0, r*1.2);
+        g.addColorStop(0, "rgba(255,255,255,0.55)");
+        g.addColorStop(0.35, col);
+        g.addColorStop(1, "rgba(0,0,0,0.28)");
+        ctx.fillStyle = g;
+        ctx.strokeStyle = "rgba(0,0,0,0.75)";
+        ctx.lineWidth = 2.2;
+        ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+
+        ctx.fillStyle="rgba(0,0,0,0.55)";
+        ctx.beginPath(); ctx.arc(0,0,r*0.55,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle="rgba(230,237,243,0.95)";
+        ctx.font="bold 13px system-ui";
+        ctx.textAlign="center"; ctx.textBaseline="middle";
+        const label = String(fx.pieceId).match(/_(\d+)$/)?.[1] || "";
+        ctx.fillText(label, 0, 0);
+
+        ctx.restore();
+      }
+      kickFlyFxs = alive;
+
+      // screen shake on impacts (tiny)
+      if(impactFxs.length){
+        // just re-draw next frame
+        ensureAnimLoop();
+      }
+    }
+
+    // impact pulses
+    if(impactFxs && impactFxs.length){
+      const keep=[];
+      for(const fx of impactFxs){
+        const age=(nowFx - fx.t0);
+        if(age>fx.dur) continue;
+        keep.push(fx);
+        const t=age/fx.dur;
+        const a=(1-t);
+        const p=worldToScreen({x:fx.x, y:fx.y});
+        ctx.save();
+        ctx.globalAlpha=0.55*a;
+        ctx.strokeStyle=(COLORS[fx.color] || fx.color);
+        ctx.lineWidth=4;
+        ctx.beginPath();
+        ctx.arc(p.x,p.y, 18 + t*34, 0, Math.PI*2);
+        ctx.stroke();
+        ctx.restore();
+      }
+      impactFxs=keep;
+    }
     }
 
     const r=Math.max(16, board.ui?.nodeRadius || 20);
@@ -1229,12 +1526,9 @@ try{ ws = new WebSocket(SERVER_URL); }
 
     // pieces stacked
     const stacks=new Map();
-    const movingKey = movingPieceKey();
-
     for(const c of PLAYERS){
       const pcs=state.pieces[c];
       for(let i=0;i<pcs.length;i++){
-        if(movingKey && movingKey.color===c && movingKey.index===i) continue; // während Animation nicht in Stack zeichnen
         const pos=pcs[i].pos;
         if(typeof pos==="string" && adj.has(pos)){
           if(!stacks.has(pos)) stacks.set(pos, []);
@@ -1248,29 +1542,6 @@ try{ ws = new WebSocket(SERVER_URL); }
       drawStack(arr, s.x, s.y, r);
     }
 
-    // --- draw moving piece on top (field-by-field) ---
-    const mp = moveAnimPosition();
-    if(mp && moveAnim){
-      const ss = worldToScreen({x:mp.x, y:mp.y});
-      const col = COLORS[moveAnim.color] || moveAnim.color || "rgba(255,255,255,0.9)";
-      const rr = r*0.95;
-      const yOff = - (8 + rr*0.25) * mp.bounce; // leichter Sprung
-      const x = ss.x, y = ss.y + yOff;
-
-      ctx.save();
-      const g = ctx.createRadialGradient(x - rr*0.22, y - rr*0.22, rr*0.2, x, y, rr*1.15);
-      g.addColorStop(0, "rgba(255,255,255,0.45)");
-      g.addColorStop(0.4, col);
-      g.addColorStop(1, "rgba(0,0,0,0.25)");
-      ctx.fillStyle = g;
-      ctx.strokeStyle = "rgba(0,0,0,0.7)";
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(x, y, rr, 0, Math.PI*2);
-      ctx.fill(); ctx.stroke();
-      ctx.restore();
-    }
-
     if(selected){
       const pc = state.pieces[selected.color]?.[selected.index];
       if(pc && typeof pc.pos==="string" && adj.has(pc.pos)){
@@ -1281,6 +1552,50 @@ try{ ws = new WebSocket(SERVER_URL); }
         }
       }
     }
+
+    // Ultra: POW text bubbles (draw on top)
+    if(powFxs && powFxs.length){
+      const keep=[];
+      for(const fx of powFxs){
+        const age = nowFx - fx.t0;
+        if(age > fx.dur) continue;
+        keep.push(fx);
+        const t = Math.max(0, Math.min(1, age / fx.dur));
+        const a = 1 - t;
+        const p = worldToScreen({x:fx.x, y:fx.y});
+        const rise = t * 28;
+        ctx.save();
+        ctx.globalAlpha = 0.95 * a;
+        ctx.translate(p.x, p.y - 26 - rise);
+        const sc = 0.9 + Math.sin(t*Math.PI) * 0.25;
+        ctx.scale(sc, sc);
+        // bubble
+        ctx.fillStyle = "rgba(0,0,0,0.65)";
+        ctx.strokeStyle = "rgba(255,255,255,0.65)";
+        ctx.lineWidth = 3;
+        const w = 92, h = 46, rr = 14;
+        ctx.beginPath();
+        ctx.moveTo(-w/2+rr, -h/2);
+        ctx.arcTo(w/2, -h/2, w/2, h/2, rr);
+        ctx.arcTo(w/2, h/2, -w/2, h/2, rr);
+        ctx.arcTo(-w/2, h/2, -w/2, -h/2, rr);
+        ctx.arcTo(-w/2, -h/2, w/2, -h/2, rr);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // text
+        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.font = "900 22px system-ui";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(fx.text || "POW!", 0, 2);
+        ctx.restore();
+      }
+      powFxs = keep;
+    }
+
+    // end outer shake transform
+    ctx.restore();
   }
 
   // ===== Interaction =====
@@ -1300,6 +1615,8 @@ try{ ws = new WebSocket(SERVER_URL); }
   }
 
   function onPointerDown(ev){
+    if(animatingMove){ toast("Figur läuft…"); return; }
+
     canvas.setPointerCapture(ev.pointerId);
     const sp=pointerPos(ev);
     // double-tap (or double-click) to auto-fit board (tablet safe)
@@ -1324,8 +1641,6 @@ try{ ws = new WebSocket(SERVER_URL); }
 
     const wp=screenToWorld(sp);
     const hit=hitNode(wp);
-
-    if(animatingMove){ toast("Animation läuft…"); return; }
 
     const isMyTurn = (netMode!=="client") || (myColor && myColor===state.currentPlayer);
     if(netMode==="client" && (!myColor || !isMyTurn) && (phase==="placing_barricade" || phase==="need_move" || phase==="need_roll")){
@@ -1410,7 +1725,7 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
 
   // ===== Buttons =====
   rollBtn.addEventListener("click", () => {
-    if(animatingMove){ toast("Warte bis die Figur fertig gelaufen ist"); return; }
+    if(animatingMove){ toast("Figur läuft…"); return; }
     if(netMode!=="offline"){
       if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
       // server checks turn
@@ -1422,20 +1737,27 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
   });
 
   endBtn.addEventListener("click", () => {
+    if(animatingMove){ toast("Figur läuft…"); return; }
+    // Online: Server-autorisiert beenden (Host+Client gleich)
     if(netMode!=="offline"){
-      toast("Zug beenden macht der Server automatisch nach dem Zug");
+      if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
+      wsSend({type:"end_turn", ts:Date.now()});
       return;
     }
+    // Offline: lokal
     if(phase!=="placing_barricade" && phase!=="game_over") nextPlayer();
     if(netMode==="host") broadcastState("state");
   });
 
   if(skipBtn) skipBtn.addEventListener("click", () => {
-    if(netMode==="client"){
-      if(!myColor){ toast("Bitte Farbe wählen"); return; }
-      if(myColor!==state.currentPlayer){ toast("Du bist nicht dran"); return; }
-      sendIntent({type:"skip"}); return;
+    if(animatingMove){ toast("Figur läuft…"); return; }
+    // Online: Server-autorisiert skippen (Host+Client gleich)
+    if(netMode!=="offline"){
+      if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
+      wsSend({type:"skip_turn", ts:Date.now()});
+      return;
     }
+    // Offline: lokal
     if(phase!=="placing_barricade" && phase!=="game_over"){ toast("Runde ausgesetzt"); nextPlayer(); }
     if(netMode==="host") broadcastState("state");
   });
@@ -1544,15 +1866,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
       board = await loadBoard();
       buildGraph();
       resize();
-
-      // --- Stabil: Canvas bekommt sofort echte Größe (auch ohne manuelles Resize/Reset) ---
-      try{
-        const wrap = document.querySelector(".boardWrap");
-        if(wrap && window.ResizeObserver){
-          const ro = new ResizeObserver(()=>{ try{ resize(); }catch(_e){} });
-          ro.observe(wrap);
-        }
-      }catch(_e){}
 
       // restore previous view if available (optional)
       let hadSavedView = false;
