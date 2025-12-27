@@ -26,6 +26,11 @@
   const endBtn  = $("endBtn");
   const skipBtn = $("skipBtn");
   const resetBtn= $("resetBtn");
+  // Host tools (Save/Load) - host only
+  const hostTools = $("hostTools");
+  const saveBtn = $("saveBtn");
+  const loadBtn = $("loadBtn");
+  const loadFile = $("loadFile");
   const diceEl  = $("diceCube");
   const turnText= $("turnText");
   const turnDot = $("turnDot");
@@ -245,6 +250,9 @@
       });
       netPlayersEl.textContent = parts.join(" · ");
     }
+
+    // host-only controls visibility
+    updateHostToolsUI();
   }
 
   function updateStartButton(){
@@ -254,6 +262,17 @@
     const hasState = !!(state && state.started);
     startBtn.disabled = !(amHost && netCanStart && !hasState);
     startBtn.textContent = hasState ? 'Spiel läuft' : 'Spiel starten';
+  }
+
+  function isMeHost(){
+    const me = rosterById.get(clientId);
+    return !!(me && me.isHost);
+  }
+
+  // Host-only UI block (Save/Load)
+  function updateHostToolsUI(){
+    const show = (netMode !== "offline") && isMeHost();
+    if(hostTools) hostTools.style.display = show ? "flex" : "none";
   }
 
   function scheduleReconnect(){
@@ -328,6 +347,24 @@ try{ ws = new WebSocket(SERVER_URL); }
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
         return;
       }
+
+      // Host Save/Load: server sends back a JSON snapshot for download
+      if(type==="export_state"){
+        try{
+          const payload = JSON.stringify(msg.state ?? null, null, 2);
+          const blob = new Blob([payload], {type:"application/json"});
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = `barikade_save_${roomCode || "room"}.json`;
+          a.click();
+          setTimeout(()=>{ try{ URL.revokeObjectURL(a.href); }catch(_e){} }, 1200);
+          toast("Save heruntergeladen");
+        }catch(_e){
+          toast("Save fehlgeschlagen");
+        }
+        return;
+      }
+
       if(type==="error"){
         const code = msg.code || "";
         const message = msg.message || "Server-Fehler";
@@ -358,6 +395,7 @@ try{ ws = new WebSocket(SERVER_URL); }
     }
     setNetStatus("Offline", false);
     hideNetBanner();
+    updateHostToolsUI();
   }
 
   function saveSession(){
@@ -1424,7 +1462,35 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     saveSession();
     disconnectWS();
     setNetPlayers([]);
+    updateHostToolsUI();
     toast("Offline");
+  });
+
+  // Host tools (Save/Load) – only host can use
+  if(saveBtn) saveBtn.addEventListener("click", () => {
+    if(!isMeHost()) { toast("Nur Host"); return; }
+    if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
+    wsSend({ type:"export_state", ts: Date.now() });
+    toast("Save angefordert…");
+  });
+
+  if(loadBtn) loadBtn.addEventListener("click", () => {
+    if(!isMeHost()) { toast("Nur Host"); return; }
+    if(!loadFile) return;
+    loadFile.value = "";
+    loadFile.click();
+  });
+
+  if(loadFile) loadFile.addEventListener("change", async () => {
+    if(!isMeHost()) { toast("Nur Host"); return; }
+    const f = loadFile.files && loadFile.files[0];
+    if(!f) return;
+    const text = await f.text();
+    let st = null;
+    try { st = JSON.parse(text); } catch(_e) { toast("Ungültige JSON"); return; }
+    if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
+    wsSend({ type:"import_state", state: st, ts: Date.now() });
+    toast("Load gesendet…");
   });
 
   // Color pick
