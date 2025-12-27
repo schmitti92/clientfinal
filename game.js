@@ -159,7 +159,7 @@
   let moveGhostFx = null;
 
   // ===== Online =====
-  const SERVER_URL = "wss://serverfinal-9t39.onrender.com";
+  const SERVER_URL = "wss://serverfinal-ynbe.onrender.com";
   if(serverLabel) serverLabel.textContent = SERVER_URL;
 
   let ws=null;
