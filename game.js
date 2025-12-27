@@ -436,6 +436,7 @@ try{ ws = new WebSocket(SERVER_URL); }
       }
 
       state = {
+        started: true,
         players,
         currentPlayer: server.turnColor,
         dice: (server.rolled==null ? null : Number(server.rolled)),
@@ -1368,7 +1369,8 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
 
   endBtn.addEventListener("click", () => {
     if(netMode!=="offline"){
-      toast("Zug beenden macht der Server automatisch nach dem Zug");
+      if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
+      wsSend({type:"end_turn", ts:Date.now()});
       return;
     }
     if(phase!=="placing_barricade" && phase!=="game_over") nextPlayer();
@@ -1376,10 +1378,12 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
   });
 
   if(skipBtn) skipBtn.addEventListener("click", () => {
-    if(netMode==="client"){
+    if(netMode!=="offline"){
       if(!myColor){ toast("Bitte Farbe wählen"); return; }
       if(myColor!==state.currentPlayer){ toast("Du bist nicht dran"); return; }
-      sendIntent({type:"skip"}); return;
+      if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
+      wsSend({type:"skip_turn", ts:Date.now()});
+      return;
     }
     if(phase!=="placing_barricade" && phase!=="game_over"){ toast("Runde ausgesetzt"); nextPlayer(); }
     if(netMode==="host") broadcastState("state");
