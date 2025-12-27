@@ -28,6 +28,7 @@
   const resetBtn= $("resetBtn");
   // Host tools (Save/Load) - host only
   const hostTools = $("hostTools");
+  const resumeBtn = $("resumeBtn");
   const saveBtn = $("saveBtn");
   const loadBtn = $("loadBtn");
   const loadFile = $("loadFile");
@@ -273,6 +274,7 @@
   function updateHostToolsUI(){
     const show = (netMode !== "offline") && isMeHost();
     if(hostTools) hostTools.style.display = show ? "flex" : "none";
+    if(resumeBtn) resumeBtn.disabled = !(show && ws && ws.readyState===1);
   }
 
   function scheduleReconnect(){
@@ -341,44 +343,10 @@ try{ ws = new WebSocket(SERVER_URL); }
         return;
       }
       if(type==="move"){
-        // (7/8/109) animate path + destination glow (field-by-field, lock input until done)
+        // (7/8/109) animate path + destination glow
         if(msg.action) queueMoveFx(msg.action);
+        if(msg.state) applyRemoteState(msg.state);
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
-
-        // We want: show every step BEFORE we commit the final server state.
-        // Strategy: apply final state to capture it, roll back to previous, animate path, then commit final.
-        (async () => {
-          const prev = snapshotRuntimeState();
-
-          // Apply final server state first (so we have the truth), then snapshot it.
-          if(msg.state) applyRemoteState(msg.state);
-          const finalSt = snapshotRuntimeState();
-
-          const path = msg.action?.path;
-          const pid  = msg.action?.pieceId;
-
-          if(prev && finalSt && Array.isArray(path) && path.length){
-            // Roll back visuals to pre-move state
-            state = prev;
-            if(prev.phase) phase = prev.phase;
-            placingChoices = Array.isArray(prev.placingChoices) ? [...prev.placingChoices] : [];
-            // During animation we don't want stale selections
-            selected = null;
-            legalTargets = [];
-            legalMovesAll = [];
-            legalMovesByPiece = new Map();
-            updateTurnUI(); draw();
-
-            const pref = findPieceRefById(pid, prev) || findPieceRefById(pid, finalSt);
-            if(pref) await animatePathForPiece(pref, path, 220);
-
-            // Commit the final server truth (includes kicks, barricades, phase, turn, etc.)
-            state = finalSt;
-            if(finalSt.phase) phase = finalSt.phase;
-            placingChoices = Array.isArray(finalSt.placingChoices) ? [...finalSt.placingChoices] : [];
-            updateTurnUI(); updateStartButton(); draw();
-          }
-        })();
         return;
       }
 
@@ -695,45 +663,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     const now = performance.now();
     lastMoveFx = { color: color || "white", pts, t0: now, dur: 520 };
     moveGhostFx = { color: color || "white", pts, t0: now, dur: 520 };
-  }
-
-  // === Real field-by-field animation (no rule changes, only visual + input lock) ===
-  // While this runs, no one may roll/end/interact (next player waits like a real board game).
-  async function animatePathForPiece(pieceRef, pathIds, stepMs=220){
-    if(!pieceRef || !Array.isArray(pathIds) || pathIds.length===0) return;
-    if(!state || !state.pieces || !state.pieces[pieceRef.color] || !state.pieces[pieceRef.color][pieceRef.index]) return;
-    if(isAnimatingMove) return; // prevent overlapping animations
-
-    isAnimatingMove = true;
-    updateTurnUI();
-
-    const currentPos = state.pieces[pieceRef.color][pieceRef.index].pos;
-    let startIndex = 0;
-    if(typeof currentPos === "string" && String(pathIds[0]) === String(currentPos)) startIndex = 1;
-
-    for(let i=startIndex;i<pathIds.length;i++){
-      state.pieces[pieceRef.color][pieceRef.index].pos = String(pathIds[i]);
-      draw();
-      await sleep(stepMs);
-    }
-
-    isAnimatingMove = false;
-    updateTurnUI();
-    draw();
-  }
-
-  function findPieceRefById(pieceId, st){
-    if(!pieceId || !st || !st.pieces) return null;
-    for(const color of Object.keys(st.pieces)){
-      const arr = st.pieces[color];
-      if(!Array.isArray(arr)) continue;
-      for(let i=0;i<arr.length;i++){
-        if(String(arr[i]?.pieceId) === String(pieceId)){
-          return { color, index: i };
-        }
-      }
-    }
-    return null;
   }
 
   function showOverlay(title, sub, hint){
@@ -1371,9 +1300,6 @@ try{ ws = new WebSocket(SERVER_URL); }
     const wp=screenToWorld(sp);
     const hit=hitNode(wp);
 
-    // While animating a move, the board is "locked" (next player waits like real game).
-    if(isAnimatingMove) return;
-
     const isMyTurn = (netMode!=="client") || (myColor && myColor===state.currentPlayer);
     if(netMode==="client" && (!myColor || !isMyTurn) && (phase==="placing_barricade" || phase==="need_move" || phase==="need_roll")){
       toast(!myColor ? "Bitte Farbe wählen" : "Du bist nicht dran");
@@ -1405,17 +1331,9 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
         const m = list.find(x => x.toId===hit.id);
         if(m){
           if(netMode==="client"){ wsSend({type:"move_request", pieceId: (state.pieces[selected.color][selected.index].pieceId), targetId: hit.id, ts:Date.now()}); return; }
-          // OFFLINE (and local host testing): animate field-by-field, then apply rules (kick/barricade/etc.)
-          (async () => {
-            const pref = m.piece;
-            const path = Array.isArray(m.path) ? m.path : [];
-            if(path.length){
-              await animatePathForPiece(pref, path, 220);
-            }
-            movePiece(m);
-            if(netMode==="host") broadcastState("state");
-            draw();
-          })();
+          movePiece(m);
+          if(netMode==="host") broadcastState("state");
+          draw();
           return;
         }
         toast("Ungültiges Zielfeld (bitte neu zählen)");
@@ -1476,6 +1394,13 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     if(state && state.started){ toast("Spiel läuft bereits"); return; }
     if(!netCanStart){ toast("Mindestens 2 Spieler nötig"); return; }
     wsSend({type:"start", ts:Date.now()});
+  });
+
+  // Host-only: Spiel fortsetzen (macht NICHTS anderes als Snapshot neu anfordern)
+  resumeBtn && resumeBtn.addEventListener("click", () => {
+    if(netMode!=="host"){ toast("Nur Host kann fortsetzen"); return; }
+    if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
+    wsSend({type:"resume", ts:Date.now()});
   });
 
   rollBtn.addEventListener("click", () => {
