@@ -165,6 +165,29 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   let lastMoveFx = null;
   let moveGhostFx = null;
 
+  let rafMoveFx = null;
+
+  function isFxActive(){
+    const now = performance.now();
+    const trailOn = !!(lastMoveFx && (now - lastMoveFx.t0) < 900);
+    const ghostOn = !!(moveGhostFx && moveGhostFx.pts && (now - moveGhostFx.t0) < (moveGhostFx.dur || 0));
+    return trailOn || ghostOn;
+  }
+
+  function startFxLoop(){
+    if(rafMoveFx) return;
+    const tick = () => {
+      rafMoveFx = requestAnimationFrame(tick);
+      draw();
+      if(!isFxActive()){
+        cancelAnimationFrame(rafMoveFx);
+        rafMoveFx = null;
+      }
+    };
+    rafMoveFx = requestAnimationFrame(tick);
+  }
+
+
   // ===== Online =====
   const SERVER_URL = "wss://serverfinal-ynbe.onrender.com";
   if(serverLabel) serverLabel.textContent = SERVER_URL;
@@ -661,8 +684,11 @@ try{ ws = new WebSocket(SERVER_URL); }
     if(pts.length < 2) return;
 
     const now = performance.now();
-    lastMoveFx = { color: color || "white", pts, t0: now, dur: 520 };
-    moveGhostFx = { color: color || "white", pts, t0: now, dur: 520 };
+    const steps = pts.length - 1;
+    const dur = Math.max(650, Math.min(2200, steps * 260));
+    lastMoveFx = { color: color || "white", pts, t0: now, dur };
+    moveGhostFx = { color: color || "white", pts, t0: now, dur };
+    startFxLoop();
   }
 
   function showOverlay(title, sub, hint){
@@ -1151,34 +1177,6 @@ try{ ws = new WebSocket(SERVER_URL); }
       ctx.restore();
     }
 
-    // (7) ghost piece sliding along path (visual only)
-    if(moveGhostFx && moveGhostFx.pts && nowFx - moveGhostFx.t0 < moveGhostFx.dur){
-      const t = (nowFx - moveGhostFx.t0) / moveGhostFx.dur;
-      const nseg = moveGhostFx.pts.length-1;
-      const f = Math.max(0, Math.min(1, t));
-      const idx = Math.min(nseg-1, Math.floor(f * nseg));
-      const localT = (f * nseg) - idx;
-      const a = moveGhostFx.pts[idx];
-      const b = moveGhostFx.pts[idx+1];
-      const x = a.x + (b.x-a.x)*localT;
-      const y = a.y + (b.y-a.y)*localT;
-      const col = COLORS[moveGhostFx.color] || moveGhostFx.color || 'rgba(255,255,255,0.9)';
-      ctx.save();
-      ctx.globalAlpha = 0.75 * (1 - f*0.35);
-      const rr = 14;
-      const g = ctx.createRadialGradient(x-rr*0.2, y-rr*0.2, rr*0.2, x, y, rr*1.2);
-      g.addColorStop(0, 'rgba(255,255,255,0.55)');
-      g.addColorStop(0.35, col);
-      g.addColorStop(1, 'rgba(0,0,0,0.25)');
-      ctx.fillStyle = g;
-      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(x, y, rr, 0, Math.PI*2);
-      ctx.fill(); ctx.stroke();
-      ctx.restore();
-    }
-
     const r=Math.max(16, board.ui?.nodeRadius || 20);
 
     // nodes
@@ -1257,6 +1255,35 @@ try{ ws = new WebSocket(SERVER_URL); }
       }
     }
   }
+
+
+    // (7) ghost piece sliding along path (visual only)
+    if(moveGhostFx && moveGhostFx.pts && nowFx - moveGhostFx.t0 < moveGhostFx.dur){
+      const t = (nowFx - moveGhostFx.t0) / moveGhostFx.dur;
+      const nseg = moveGhostFx.pts.length-1;
+      const f = Math.max(0, Math.min(1, t));
+      const idx = Math.min(nseg-1, Math.floor(f * nseg));
+      const localT = (f * nseg) - idx;
+      const a = moveGhostFx.pts[idx];
+      const b = moveGhostFx.pts[idx+1];
+      const x = a.x + (b.x-a.x)*localT;
+      const y = a.y + (b.y-a.y)*localT;
+      const col = COLORS[moveGhostFx.color] || moveGhostFx.color || 'rgba(255,255,255,0.9)';
+      ctx.save();
+      ctx.globalAlpha = 0.75 * (1 - f*0.35);
+      const rr = 14;
+      const g = ctx.createRadialGradient(x-rr*0.2, y-rr*0.2, rr*0.2, x, y, rr*1.2);
+      g.addColorStop(0, 'rgba(255,255,255,0.55)');
+      g.addColorStop(0.35, col);
+      g.addColorStop(1, 'rgba(0,0,0,0.25)');
+      ctx.fillStyle = g;
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, rr, 0, Math.PI*2);
+      ctx.fill(); ctx.stroke();
+      ctx.restore();
+    }
 
   // ===== Interaction =====
   function pointerPos(ev){
