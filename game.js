@@ -32,6 +32,7 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   const hostTools = $("hostTools");
   const saveBtn = $("saveBtn");
   const loadBtn = $("loadBtn");
+  const resumeBtn = $("resumeBtn");
   const loadFile = $("loadFile");
   const diceEl  = $("diceCube");
   const turnText= $("turnText");
@@ -272,15 +273,34 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   }
 
   // Host-only UI block (Save/Load)
-  function updateHostToolsUI(){
-    const show = (netMode !== "offline") && isMeHost();
-    if(hostTools) hostTools.style.display = show ? "flex" : "none";
 
-    // Resume ist nur sinnvoll, wenn ein Spiel läuft UND server-seitig pausiert ist
-    // und wieder 2 Spieler verbunden sind (netCanStart).
+  function getResumeGate(){
+    const show = (netMode !== "offline") && isMeHost();
+    const hasState = !!(state && state.started);
+    const paused = !!(state && state.paused);
+    const ready = !!netCanStart;
+    const wsOk = !!(ws && ws.readyState===1);
+    const canResume = !!(show && wsOk && hasState && paused && ready);
+    let reason = "";
+    if(!show) reason = "Nicht Host / offline.";
+    else if(!wsOk) reason = "Nicht verbunden.";
+    else if(!hasState) reason = "Spiel nicht gestartet.";
+    else if(!paused) reason = "Spiel ist nicht pausiert.";
+    else if(!ready) reason = "Warte auf 2 verbundene Spieler.";
+    else reason = "OK";
+    return {canResume, reason, show, hasState, paused, ready, wsOk};
+  }
+
+  function updateHostToolsUI(){
+    const g = getResumeGate();
+    if(hostTools) hostTools.style.display = g.show ? "flex" : "none";
     if(resumeBtn){
-      const canResume = !!(show && state && state.started && state.paused && netCanStart);
-      resumeBtn.disabled = !canResume;
+      resumeBtn.disabled = !g.canResume;
+      resumeBtn.title = g.reason;
+    }
+    // Debug-Hilfe: wenn Debug sichtbar ist, zeig warum Resume gesperrt ist
+    if(debugLogEl && debugLogEl.style.display === "block"){
+      debugLog(`[resume-gate] can=${g.canResume} reason=${g.reason} paused=${g.paused} ready=${g.ready} ws=${g.wsOk} host=${g.show}`);
     }
   }
 
@@ -335,11 +355,15 @@ try{ ws = new WebSocket(SERVER_URL); }
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
         netCanStart = !!msg.canStart;
         updateStartButton();
+        updateHostToolsUI();
+        debugLog(`[room_update] canStart=${netCanStart} players=${(msg.players||[]).map(p=>`${p.color||"?"}:${p.connected?"✓":"x"}${p.isHost?"(H)":""}`).join(" ")} `);
         return;
       }
       if(type==="snapshot" || type==="started" || type==="place_barricade"){
         if(msg.state) applyRemoteState(msg.state);
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
+        updateHostToolsUI();
+        if(msg.state){ debugLog(`[snapshot] started=${!!msg.state.started} paused=${!!msg.state.paused} phase=${msg.state.phase} turn=${msg.state.turnColor} rolled=${msg.state.rolled}`); }
         return;
       }
       if(type==="roll"){
@@ -1429,6 +1453,14 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     if(state && state.started){ toast("Spiel läuft bereits"); return; }
     if(!netCanStart){ toast("Mindestens 2 Spieler nötig"); return; }
     wsSend({type:"start", ts:Date.now()});
+  });
+
+
+  resumeBtn && resumeBtn.addEventListener("click", () => {
+    if(netMode!=="host"){ toast("Nur Host kann fortsetzen"); return; }
+    const g = getResumeGate();
+    if(!g.canResume){ toast(g.reason || "Fortsetzen nicht möglich"); return; }
+    wsSend({type:"resume", ts:Date.now()});
   });
 
   rollBtn.addEventListener("click", () => {
