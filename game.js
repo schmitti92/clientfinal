@@ -30,6 +30,7 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   const resetBtn= $("resetBtn");
   // Host tools (Save/Load) - host only
   const hostTools = $("hostTools");
+  const resumeBtn = $("resumeBtn");
   const saveBtn = $("saveBtn");
   const loadBtn = $("loadBtn");
   const loadFile = $("loadFile");
@@ -1500,6 +1501,28 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     if(!isMeHost()) { toast("Nur Host"); return; }
     if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
     wsSend({ type:"export_state", ts: Date.now() });
+
+  if(resumeBtn) resumeBtn.addEventListener("click", () => {
+    if(!isMeHost()) { toast("Nur Host"); return; }
+    if(!roomCode){ toast("Kein Raumcode"); return; }
+    // If not connected, connect first (onopen will auto-join)
+    if(!ws || ws.readyState!==1){
+      toast("Verbinden…");
+      connectWS();
+      return;
+    }
+    // Force a fresh join to receive a snapshot (state) if the server has one
+    const sessionToken = getSessionToken();
+    wsSend({
+      type: "join",
+      room: String(roomCode).trim().toUpperCase(),
+      name: "Host",
+      asHost: true,
+      sessionToken,
+      ts: Date.now()
+    });
+    toast("Spielstand sync…");
+  });
     toast("Save angefordert…");
   });
 
