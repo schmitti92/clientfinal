@@ -32,7 +32,6 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   const hostTools = $("hostTools");
   const saveBtn = $("saveBtn");
   const loadBtn = $("loadBtn");
-  const resumeBtn = $("resumeBtn");
   const loadFile = $("loadFile");
   const diceEl  = $("diceCube");
   const turnText= $("turnText");
@@ -48,6 +47,7 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   const leaveBtn= $("leaveBtn");
   const netStatus = $("netStatus");
   const netPlayersEl = $("netPlayers");
+  const connStatusEl = $("connStatus");
   const myColorEl = $("myColor");
 
   // Color picker
@@ -204,7 +204,16 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
     try{ ws.send(JSON.stringify(obj)); return true; }catch(_e){ return false; }
   }
 
-  function setNetPlayers(list){
+  
+function renderConnPill(color, connected){
+  const name = (color==="red") ? "Rot" : (color==="blue") ? "Blau" : color;
+  const cls = color==="red" ? "pill red" : color==="blue" ? "pill blue" : "pill";
+  const mark = connected ? "✓" : "✖";
+  const title = connected ? "verbunden" : "nicht verbunden";
+  return `<span class="${cls}" title="${name} ${title}">${name} ${mark}</span>`;
+}
+
+function setNetPlayers(list){
     lastNetPlayers = Array.isArray(list) ? list : [];
     rosterById = new Map();
     for(const p of lastNetPlayers){ if(p && p.id) rosterById.set(p.id, p); }
@@ -254,6 +263,19 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
       netPlayersEl.textContent = parts.join(" · ");
     }
 
+
+    if(connStatusEl){
+      // show connection status per color (red/blue), independent of "Aktive Spieler" text
+      const redP = lastNetPlayers.find(p=>p && String(p.color||"").toLowerCase()==="red");
+      const blueP= lastNetPlayers.find(p=>p && String(p.color||"").toLowerCase()==="blue");
+      const redOk = !!(redP && redP.connected!==false);
+      const blueOk= !!(blueP && blueP.connected!==false);
+      const redHtml = renderConnPill("red", redOk);
+      const blueHtml= renderConnPill("blue", blueOk);
+      connStatusEl.innerHTML = redHtml + " " + blueHtml;
+      connStatusEl.title = `Rot: ${redOk?"verbunden":"nicht verbunden"} • Blau: ${blueOk?"verbunden":"nicht verbunden"}`;
+    }
+
     // host-only controls visibility
     updateHostToolsUI();
   }
@@ -273,35 +295,9 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   }
 
   // Host-only UI block (Save/Load)
-
-  function getResumeGate(){
-    const show = (netMode !== "offline") && isMeHost();
-    const hasState = !!(state && state.started);
-    const paused = !!(state && state.paused);
-    const ready = !!netCanStart;
-    const wsOk = !!(ws && ws.readyState===1);
-    const canResume = !!(show && wsOk && hasState && paused && ready);
-    let reason = "";
-    if(!show) reason = "Nicht Host / offline.";
-    else if(!wsOk) reason = "Nicht verbunden.";
-    else if(!hasState) reason = "Spiel nicht gestartet.";
-    else if(!paused) reason = "Spiel ist nicht pausiert.";
-    else if(!ready) reason = "Warte auf 2 verbundene Spieler.";
-    else reason = "OK";
-    return {canResume, reason, show, hasState, paused, ready, wsOk};
-  }
-
   function updateHostToolsUI(){
-    const g = getResumeGate();
-    if(hostTools) hostTools.style.display = g.show ? "flex" : "none";
-    if(resumeBtn){
-      resumeBtn.disabled = !g.canResume;
-      resumeBtn.title = g.reason;
-    }
-    // Debug-Hilfe: wenn Debug sichtbar ist, zeig warum Resume gesperrt ist
-    if(debugLogEl && debugLogEl.style.display === "block"){
-      debugLog(`[resume-gate] can=${g.canResume} reason=${g.reason} paused=${g.paused} ready=${g.ready} ws=${g.wsOk} host=${g.show}`);
-    }
+    const show = (netMode !== "offline") && isMeHost();
+    if(hostTools) hostTools.style.display = show ? "flex" : "none";
   }
 
   function scheduleReconnect(){
@@ -355,15 +351,11 @@ try{ ws = new WebSocket(SERVER_URL); }
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
         netCanStart = !!msg.canStart;
         updateStartButton();
-        updateHostToolsUI();
-        debugLog(`[room_update] canStart=${netCanStart} players=${(msg.players||[]).map(p=>`${p.color||"?"}:${p.connected?"✓":"x"}${p.isHost?"(H)":""}`).join(" ")} `);
         return;
       }
       if(type==="snapshot" || type==="started" || type==="place_barricade"){
         if(msg.state) applyRemoteState(msg.state);
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
-        updateHostToolsUI();
-        if(msg.state){ debugLog(`[snapshot] started=${!!msg.state.started} paused=${!!msg.state.paused} phase=${msg.state.phase} turn=${msg.state.turnColor} rolled=${msg.state.rolled}`); }
         return;
       }
       if(type==="roll"){
@@ -508,7 +500,6 @@ try{ ws = new WebSocket(SERVER_URL); }
 
       state = {
         started: true,
-        paused: !!server.paused,
         players,
         currentPlayer: server.turnColor,
         dice: (server.rolled==null ? null : Number(server.rolled)),
@@ -816,40 +807,13 @@ try{ ws = new WebSocket(SERVER_URL); }
 
   function updateTurnUI(){
     const c=state.currentPlayer;
-    const paused = !!state.paused;
-    if(state.winner){
-      turnText.textContent = `${PLAYER_NAME[state.winner]} gewinnt!`;
-    } else if(paused){
-      turnText.textContent = `Pausiert – Reconnect (dran wäre: ${PLAYER_NAME[c]})`;
-    } else {
-      turnText.textContent = `${PLAYER_NAME[c]} ist dran`;
-    }
+    turnText.textContent = state.winner ? `${PLAYER_NAME[state.winner]} gewinnt!` : `${PLAYER_NAME[c]} ist dran`;
     turnDot.style.background = COLORS[c];
 
     const isMyTurn = (netMode==="offline") ? true : (myColor && myColor===state.currentPlayer);
-    // Wenn Server pausiert ist: alle Spielaktionen sperren (Host kann nur "Spiel fortsetzen").
-    if(paused){
-      rollBtn.disabled = true;
-      endBtn.disabled  = true;
-      if(skipBtn) skipBtn.disabled = true;
-    } else {
-      rollBtn.disabled = (phase!=="need_roll") || !isMyTurn;
-      endBtn.disabled  = (phase==="need_roll"||phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
-      if(skipBtn) skipBtn.disabled = (phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
-    }
-
-    // Pausen-Overlay: nur für Reconnect-Pause (nicht für Winner/Error)
-    if(paused && !state.winner){
-      const hint = (netMode!=="offline" && isMeHost())
-        ? "Als Host: erst wenn beide wieder da sind, klicke 'Spiel fortsetzen'."
-        : "Warte auf den Host…";
-      showOverlay("⏸️ Spiel pausiert", "Reconnect erkannt. Spiel ist gesperrt.", hint);
-    } else {
-      // Overlay nur schließen, wenn es unser Pausen-Overlay ist
-      try{
-        if(overlay.classList.contains("show") && overlayTitle.textContent.includes("Spiel pausiert")) hideOverlay();
-      }catch(_e){}
-    }
+    rollBtn.disabled = (phase!=="need_roll") || !isMyTurn;
+    endBtn.disabled  = (phase==="need_roll"||phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
+    if(skipBtn) skipBtn.disabled = (phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
 
     if(colorPickWrap){
       colorPickWrap.style.display = (netMode!=="offline" && !myColor) ? "block" : "none";
@@ -1453,14 +1417,6 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     if(state && state.started){ toast("Spiel läuft bereits"); return; }
     if(!netCanStart){ toast("Mindestens 2 Spieler nötig"); return; }
     wsSend({type:"start", ts:Date.now()});
-  });
-
-
-  resumeBtn && resumeBtn.addEventListener("click", () => {
-    if(netMode!=="host"){ toast("Nur Host kann fortsetzen"); return; }
-    const g = getResumeGate();
-    if(!g.canResume){ toast(g.reason || "Fortsetzen nicht möglich"); return; }
-    wsSend({type:"resume", ts:Date.now()});
   });
 
   rollBtn.addEventListener("click", () => {
