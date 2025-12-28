@@ -532,7 +532,88 @@ try{ ws = new WebSocket(SERVER_URL); }
       ensureFittedOnce();
   }
 
-  function serializeState(){
+  
+// ===== Import adapter =====
+// Load accepts BOTH:
+// A) Server export (serverfinal): {turnColor, phase, rolled, pieces:[...], barricades:[...], goal}
+// B) Offline-Save / old client format: {currentPlayer, dice, pieces:{red:[{pos}],blue:[...]}, barricades:[...|Set], goalNodeId, phase:"placing_barricade"|...}
+function normalizeImportedState(raw){
+  let st = raw;
+
+  // allow wrapped payloads: {code, ts, state:{...}}
+  if(st && typeof st==="object" && st.state && typeof st.state==="object" && (st.code || st.ts)){
+    st = st.state;
+  }
+  if(!st || typeof st!=="object") return null;
+
+  // already server format
+  if(st.turnColor && st.phase && Array.isArray(st.pieces) && Array.isArray(st.barricades)){
+    return st;
+  }
+
+  // try adapt from client/offline format
+  if(st.currentPlayer && st.pieces && typeof st.pieces==="object"){
+    // build house ids from loaded board
+    const houseByColor = { red:[], blue:[] };
+    try{
+      if(board && Array.isArray(board.nodes)){
+        const houses = board.nodes
+          .filter(n=>n && n.kind==="house" && n.flags && (n.flags.houseColor==="red" || n.flags.houseColor==="blue"))
+          .map(n=>({id:n.id, color:n.flags.houseColor, slot:Number(n.flags.houseSlot||0)}));
+        houses.sort((a,b)=>a.slot-b.slot);
+        for(const h of houses){
+          if(h.color==="red") houseByColor.red.push(h.id);
+          if(h.color==="blue") houseByColor.blue.push(h.id);
+        }
+      }
+    }catch(_e){}
+
+    const pieces = [];
+    for(const color of ["red","blue"]){
+      const arr = st.pieces[color] || [];
+      for(let i=0;i<5;i++){
+        const pos = (arr[i] && arr[i].pos!=null) ? String(arr[i].pos) : "house";
+        const id = `p_${color}_${i+1}`;
+        const label = i+1;
+        let posKind="house", nodeId=null;
+        if(pos==="goal"){ posKind="goal"; nodeId=null; }
+        else if(pos==="house"){ posKind="house"; nodeId=null; }
+        else { posKind="board"; nodeId=pos; }
+
+        const houseId = houseByColor[color][i] || houseByColor[color][0] || null;
+        pieces.push({ id, label, color, posKind, houseId, nodeId });
+      }
+    }
+
+    // phase mapping
+    let ph = String(st.phase||"need_roll");
+    if(ph==="placing_barricade") ph="place_barricade";
+    if(ph==="game_over") ph="need_roll";
+
+    const barricadesArr = (() => {
+      if(st.barricades instanceof Set) return Array.from(st.barricades).map(String);
+      if(Array.isArray(st.barricades)) return st.barricades.map(String);
+      return [];
+    })();
+
+    const goal = st.goal ?? (st.goalNodeId ? String(st.goalNodeId) : (board && board.meta ? board.meta.goal : null));
+
+    return {
+      started: true,
+      paused: false,
+      turnColor: String(st.currentPlayer),
+      phase: ph,
+      rolled: (st.dice==null ? null : Number(st.dice)),
+      pieces,
+      barricades: barricadesArr,
+      goal: goal || null
+    };
+  }
+
+  return null;
+}
+
+function serializeState(){
     const st = JSON.parse(JSON.stringify(state));
     if(state.barricades instanceof Set) st.barricades = Array.from(state.barricades);
     st.players = state?.players ? [...state.players] : [...PLAYERS];
@@ -1533,7 +1614,9 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     let st = null;
     try { st = JSON.parse(text); } catch(_e) { toast("Ungültige JSON"); return; }
     if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
-    wsSend({ type:"import_state", state: st, ts: Date.now() });
+        const normalized = normalizeImportedState(st);
+    if(!normalized){ toast("State-Format passt nicht"); return; }
+    wsSend({ type:"import_state", state: normalized, ts: Date.now() });
     toast("Load gesendet…");
   });
 
