@@ -1369,7 +1369,7 @@ const r=Math.max(16, board.ui?.nodeRadius || 20);
       drawStack(arr, s.x, s.y, r);
     }
 
-    // ===== animated moving piece (drawn on TOP of nodes & pieces) =====
+    // ===== animated moving piece (drawn ON TOP of nodes & pieces) =====
     if(moveAnim){
       const now = performance.now();
       const t = now - moveAnim.t0;
@@ -1391,40 +1391,56 @@ const r=Math.max(16, board.ui?.nodeRadius || 20);
         const a = nodes[seg];
         const b = nodes[seg+1];
 
-        // World interpolation
+        // linear world interpolation
         const wx = a.x + (b.x - a.x) * u;
         const wy = a.y + (b.y - a.y) * u;
 
+        // convert to screen
         const sp = worldToScreen({x:wx, y:wy});
 
-        // Hop curve: 0..1..0 per step
+        // hop curve: 0..1..0 each step
         const hop = Math.sin(Math.PI * u);
-        const hopPx = (moveAnim.hop || 16) * (0.85 + 0.15 * view.s);
+        const hopPx = (moveAnim.hop || 16) * (0.85 + 0.15*view.s);
         const yHop = sp.y - hop * hopPx;
 
-        const col = COLORS[moveAnim.color] || moveAnim.color || 'rgba(255,255,255,0.9)';
+        // force top-layer drawing (client sometimes had composite state left over)
         ctx.save();
-        ctx.globalAlpha = 0.95;
-        const rr = 16;
-        const g = ctx.createRadialGradient(sp.x-rr*0.2, yHop-rr*0.2, rr*0.2, sp.x, yHop, rr*1.2);
-        g.addColorStop(0, 'rgba(255,255,255,0.55)');
-        g.addColorStop(0.35, col);
-        g.addColorStop(1, 'rgba(0,0,0,0.25)');
-        ctx.fillStyle = g;
-        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
+
+        // make it CLEARLY in front: slightly bigger + shadow
+        const col = COLORS[moveAnim.color] || moveAnim.color || 'rgba(255,255,255,0.95)';
+        const rr = 18;
+
+        ctx.shadowColor = 'rgba(0,0,0,0.45)';
+        ctx.shadowBlur = 10;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 5;
+
+        // solid + subtle highlight (less transparent than before)
+        ctx.fillStyle = col;
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)';
         ctx.lineWidth = 3;
+
         ctx.beginPath();
         ctx.arc(sp.x, yHop, rr, 0, Math.PI*2);
-        ctx.fill(); ctx.stroke();
+        ctx.fill();
+        ctx.stroke();
+
+        // small top highlight
+        ctx.shadowColor = 'transparent';
+        ctx.fillStyle = 'rgba(255,255,255,0.25)';
+        ctx.beginPath();
+        ctx.arc(sp.x - rr*0.25, yHop - rr*0.35, rr*0.45, 0, Math.PI*2);
+        ctx.fill();
+
         ctx.restore();
 
         // keep animating
         requestDraw();
       }
     }
-
-
-    if(selected){
+if(selected){
       const pc = state.pieces[selected.color]?.[selected.index];
       if(pc && typeof pc.pos==="string" && adj.has(pc.pos)){
         const n = nodeById.get(pc.pos);
