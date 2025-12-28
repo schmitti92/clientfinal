@@ -1295,58 +1295,7 @@ if(!node) return false;
     }
 
     // (7) step-by-step hop animation (visual override so it doesn't look like teleport)
-    if(moveAnim){
-      const now = performance.now();
-      const t = now - moveAnim.t0;
-
-      if(t >= moveAnim.totalMs){
-        moveAnim = null;
-        animPieceId = null;
-        isAnimatingMove = false;
-        // UI re-evaluate (buttons etc.)
-        updateTurnUI();
-      } else {
-        const nodes = moveAnim.nodes;
-        const steps = nodes.length - 1;
-        const f = Math.max(0, Math.min(1, t / moveAnim.totalMs)); // 0..1
-        const segF = f * steps;
-        const seg = Math.min(steps - 1, Math.floor(segF));
-        const u = segF - seg; // 0..1 within current segment
-
-        const a = nodes[seg];
-        const b = nodes[seg+1];
-
-        // World interpolation
-        const wx = a.x + (b.x - a.x) * u;
-        const wy = a.y + (b.y - a.y) * u;
-
-        const sp = worldToScreen({x:wx, y:wy});
-
-        // Hop curve: 0..1..0 per step
-        const hop = Math.sin(Math.PI * u);
-        const hopPx = (moveAnim.hop || 16) * (0.85 + 0.15 * view.s);
-        const yHop = sp.y - hop * hopPx;
-
-        const col = COLORS[moveAnim.color] || moveAnim.color || 'rgba(255,255,255,0.9)';
-        ctx.save();
-        ctx.globalAlpha = 0.95;
-        const rr = 16;
-        const g = ctx.createRadialGradient(sp.x-rr*0.2, yHop-rr*0.2, rr*0.2, sp.x, yHop, rr*1.2);
-        g.addColorStop(0, 'rgba(255,255,255,0.55)');
-        g.addColorStop(0.35, col);
-        g.addColorStop(1, 'rgba(0,0,0,0.25)');
-        ctx.fillStyle = g;
-        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(sp.x, yHop, rr, 0, Math.PI*2);
-        ctx.fill(); ctx.stroke();
-        ctx.restore();
-
-        // keep animating
-        requestDraw();
-      }
-    }
+    
 
 const r=Math.max(16, board.ui?.nodeRadius || 20);
 
@@ -1419,6 +1368,61 @@ const r=Math.max(16, board.ui?.nodeRadius || 20);
       const s=worldToScreen(n);
       drawStack(arr, s.x, s.y, r);
     }
+
+    // ===== animated moving piece (drawn on TOP of nodes & pieces) =====
+    if(moveAnim){
+      const now = performance.now();
+      const t = now - moveAnim.t0;
+
+      if(t >= moveAnim.totalMs){
+        moveAnim = null;
+        animPieceId = null;
+        isAnimatingMove = false;
+        // UI re-evaluate (buttons etc.)
+        updateTurnUI();
+      } else {
+        const nodes = moveAnim.nodes;
+        const steps = nodes.length - 1;
+        const f = Math.max(0, Math.min(1, t / moveAnim.totalMs)); // 0..1
+        const segF = f * steps;
+        const seg = Math.min(steps - 1, Math.floor(segF));
+        const u = segF - seg; // 0..1 within current segment
+
+        const a = nodes[seg];
+        const b = nodes[seg+1];
+
+        // World interpolation
+        const wx = a.x + (b.x - a.x) * u;
+        const wy = a.y + (b.y - a.y) * u;
+
+        const sp = worldToScreen({x:wx, y:wy});
+
+        // Hop curve: 0..1..0 per step
+        const hop = Math.sin(Math.PI * u);
+        const hopPx = (moveAnim.hop || 16) * (0.85 + 0.15 * view.s);
+        const yHop = sp.y - hop * hopPx;
+
+        const col = COLORS[moveAnim.color] || moveAnim.color || 'rgba(255,255,255,0.9)';
+        ctx.save();
+        ctx.globalAlpha = 0.95;
+        const rr = 16;
+        const g = ctx.createRadialGradient(sp.x-rr*0.2, yHop-rr*0.2, rr*0.2, sp.x, yHop, rr*1.2);
+        g.addColorStop(0, 'rgba(255,255,255,0.55)');
+        g.addColorStop(0.35, col);
+        g.addColorStop(1, 'rgba(0,0,0,0.25)');
+        ctx.fillStyle = g;
+        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(sp.x, yHop, rr, 0, Math.PI*2);
+        ctx.fill(); ctx.stroke();
+        ctx.restore();
+
+        // keep animating
+        requestDraw();
+      }
+    }
+
 
     if(selected){
       const pc = state.pieces[selected.color]?.[selected.index];
