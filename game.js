@@ -167,6 +167,10 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   let lastDiceFace = 0;
   let lastMoveFx = null;
   let moveGhostFx = null;
+  // Step-by-step move animation (visual override so it doesn't look like teleport)
+  let moveAnim = null;   // { pieceId, color, nodes:[{x,y,id}], t0, stepMs, hop, totalMs }
+  let animPieceId = null;
+  let rafDrawId = 0;
 
   // ===== Online =====
   const SERVER_URL = "wss://serverfinal-ynbe.onrender.com";
@@ -728,20 +732,47 @@ function toast(msg){
     if(!action || !board) return;
     const path = Array.isArray(action.path) ? action.path.map(String) : [];
     if(path.length < 2) return;
-    const color = parseColorFromPieceId(action.pieceId) || null;
 
-    const pts=[];
+    const color = parseColorFromPieceId(action.pieceId) || "white";
+
+    // Build WORLD nodes for the path (screen coords are calculated during draw so zoom/pan stays correct)
+    const nodes=[];
     for(const id of path){
       const n = nodeById.get(String(id));
       if(!n) continue;
-      const s = worldToScreen(n);
-      pts.push({x:s.x, y:s.y, id:String(id)});
+      nodes.push({ x:n.x, y:n.y, id:String(id) });
     }
-    if(pts.length < 2) return;
+    if(nodes.length < 2) return;
+
+    const steps = nodes.length - 1;
+
+    // Per-step duration (tweak feel here). Total scales with steps so it never looks like teleport.
+    const stepMs = 220; // 180..260 feels good
+    const totalMs = Math.min(2400, Math.max(420, steps * stepMs));
 
     const now = performance.now();
-    lastMoveFx = { color: color || "white", pts, t0: now, dur: 520 };
-    moveGhostFx = { color: color || "white", pts, t0: now, dur: 520 };
+
+    // Trail/highlight (optional)
+    const pts = nodes.map(n => worldToScreen(n));
+    lastMoveFx = { color: color || "white", pts, t0: now, dur: totalMs };
+
+    // Disable old sliding-ghost (we render the real piece as a visual override)
+    moveGhostFx = null;
+
+    // Real piece animation override
+    moveAnim = {
+      pieceId: String(action.pieceId),
+      color: color || "white",
+      nodes,
+      t0: now,
+      stepMs,
+      hop: 16,       // hop height in px-ish (scaled with zoom below)
+      totalMs
+    };
+    animPieceId = moveAnim.pieceId;
+    isAnimatingMove = true;
+
+    requestDraw();
   }
 
   function showOverlay(title, sub, hint){
@@ -884,6 +915,13 @@ function toast(msg){
     rollBtn.disabled = (phase!=="need_roll") || !isMyTurn;
     endBtn.disabled  = (phase==="need_roll"||phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
     if(skipBtn) skipBtn.disabled = (phase==="placing_barricade"||phase==="game_over") || !isMyTurn;
+
+    // While a move animation is running, lock the controls so the next action can't happen mid-hop
+    if(isAnimatingMove){
+      rollBtn.disabled = true;
+      endBtn.disabled  = true;
+      if(skipBtn) skipBtn.disabled = true;
+    }
 
     if(colorPickWrap){
       colorPickWrap.style.display = (netMode!=="offline" && !myColor) ? "block" : "none";
@@ -1194,6 +1232,17 @@ if(!node) return false;
     ctx.restore();
   }
 
+  // Request a redraw on the next animation frame (prevents spamming draw() calls)
+  function requestDraw(){
+    if(rafDrawId) return;
+    rafDrawId = requestAnimationFrame(() => {
+      rafDrawId = 0;
+      draw();
+    });
+  }
+
+
+
   function draw(){
     if(!board||!state) return;
     const rect=canvas.getBoundingClientRect();
@@ -1245,35 +1294,61 @@ if(!node) return false;
       ctx.restore();
     }
 
-    // (7) ghost piece sliding along path (visual only)
-    if(moveGhostFx && moveGhostFx.pts && nowFx - moveGhostFx.t0 < moveGhostFx.dur){
-      const t = (nowFx - moveGhostFx.t0) / moveGhostFx.dur;
-      const nseg = moveGhostFx.pts.length-1;
-      const f = Math.max(0, Math.min(1, t));
-      const idx = Math.min(nseg-1, Math.floor(f * nseg));
-      const localT = (f * nseg) - idx;
-      const a = moveGhostFx.pts[idx];
-      const b = moveGhostFx.pts[idx+1];
-      const x = a.x + (b.x-a.x)*localT;
-      const y = a.y + (b.y-a.y)*localT;
-      const col = COLORS[moveGhostFx.color] || moveGhostFx.color || 'rgba(255,255,255,0.9)';
-      ctx.save();
-      ctx.globalAlpha = 0.75 * (1 - f*0.35);
-      const rr = 14;
-      const g = ctx.createRadialGradient(x-rr*0.2, y-rr*0.2, rr*0.2, x, y, rr*1.2);
-      g.addColorStop(0, 'rgba(255,255,255,0.55)');
-      g.addColorStop(0.35, col);
-      g.addColorStop(1, 'rgba(0,0,0,0.25)');
-      ctx.fillStyle = g;
-      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(x, y, rr, 0, Math.PI*2);
-      ctx.fill(); ctx.stroke();
-      ctx.restore();
+    // (7) step-by-step hop animation (visual override so it doesn't look like teleport)
+    if(moveAnim){
+      const now = performance.now();
+      const t = now - moveAnim.t0;
+
+      if(t >= moveAnim.totalMs){
+        moveAnim = null;
+        animPieceId = null;
+        isAnimatingMove = false;
+        // UI re-evaluate (buttons etc.)
+        updateTurnUI();
+      } else {
+        const nodes = moveAnim.nodes;
+        const steps = nodes.length - 1;
+        const f = Math.max(0, Math.min(1, t / moveAnim.totalMs)); // 0..1
+        const segF = f * steps;
+        const seg = Math.min(steps - 1, Math.floor(segF));
+        const u = segF - seg; // 0..1 within current segment
+
+        const a = nodes[seg];
+        const b = nodes[seg+1];
+
+        // World interpolation
+        const wx = a.x + (b.x - a.x) * u;
+        const wy = a.y + (b.y - a.y) * u;
+
+        const sp = worldToScreen({x:wx, y:wy});
+
+        // Hop curve: 0..1..0 per step
+        const hop = Math.sin(Math.PI * u);
+        const hopPx = (moveAnim.hop || 16) * (0.85 + 0.15 * view.s);
+        const yHop = sp.y - hop * hopPx;
+
+        const col = COLORS[moveAnim.color] || moveAnim.color || 'rgba(255,255,255,0.9)';
+        ctx.save();
+        ctx.globalAlpha = 0.95;
+        const rr = 16;
+        const g = ctx.createRadialGradient(sp.x-rr*0.2, yHop-rr*0.2, rr*0.2, sp.x, yHop, rr*1.2);
+        g.addColorStop(0, 'rgba(255,255,255,0.55)');
+        g.addColorStop(0.35, col);
+        g.addColorStop(1, 'rgba(0,0,0,0.25)');
+        ctx.fillStyle = g;
+        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(sp.x, yHop, rr, 0, Math.PI*2);
+        ctx.fill(); ctx.stroke();
+        ctx.restore();
+
+        // keep animating
+        requestDraw();
+      }
     }
 
-    const r=Math.max(16, board.ui?.nodeRadius || 20);
+const r=Math.max(16, board.ui?.nodeRadius || 20);
 
     // nodes
     for(const n of board.nodes){
@@ -1327,7 +1402,12 @@ if(!node) return false;
     for(const c of PLAYERS){
       const pcs=state.pieces[c];
       for(let i=0;i<pcs.length;i++){
-        const pos=pcs[i].pos;
+        const pc = pcs[i];
+        const pos = pc.pos;
+        const pid = pc.pieceId;
+        if(animPieceId && pid === animPieceId){
+          continue; // draw as animated override, not as a stack at the target
+        }
         if(typeof pos==="string" && adj.has(pos)){
           if(!stacks.has(pos)) stacks.set(pos, []);
           stacks.get(pos).push({color:c,index:i});
