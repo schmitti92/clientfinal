@@ -167,6 +167,29 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   let lastDiceFace = 0;
   let lastMoveFx = null;
   let moveGhostFx = null;
+
+  // ===== Animation loop for move FX =====
+  // Ohne requestAnimationFrame wird nur 1 Frame gezeichnet → wirkt wie Teleport.
+  // Das Loop läuft nur solange FX aktiv sind (CPU-schonend) und sorgt auch dafür,
+  // dass die Figur am Endfeld sofort sichtbar bleibt.
+  let _raf = null;
+  function _fxActive(now=performance.now()){
+    try{
+      if(lastMoveFx && lastMoveFx.pts && (now - lastMoveFx.t0) < 900) return true;
+      if(moveGhostFx && moveGhostFx.pts && (now - moveGhostFx.t0) < (moveGhostFx.dur||0)) return true;
+    }catch(_e){}
+    return false;
+  }
+  function requestDrawLoop(){
+    if(_raf!=null) return;
+    _raf = requestAnimationFrame(function step(){
+      _raf = null;
+      if(!board || !state) return;
+      draw();
+      if(_fxActive()) requestDrawLoop();
+    });
+  }
+
   // Step-by-step move animation (visual override so it doesn't look like teleport)
   let moveAnim = null;   // { pieceId, color, nodes:[{x,y,id}], t0, stepMs, hop, totalMs }
   let animPieceId = null;
@@ -1375,11 +1398,15 @@ const r=Math.max(16, board.ui?.nodeRadius || 20);
       const t = now - moveAnim.t0;
 
       if(t >= moveAnim.totalMs){
+        // Animation finished: clear override BEFORE next render, otherwise the piece may stay hidden
+        // because stacks skipped animPieceId in the current frame.
         moveAnim = null;
         animPieceId = null;
         isAnimatingMove = false;
         // UI re-evaluate (buttons etc.)
         updateTurnUI();
+        // Force one extra frame so the final stack is drawn immediately.
+        requestDraw();
       } else {
         const nodes = moveAnim.nodes;
         const steps = nodes.length - 1;
