@@ -882,7 +882,7 @@ function toast(msg){
     toast(`${PLAYER_NAME[sel.color]} Figur ${sel.index+1} gewählt`);
   }
   function trySelectAtNode(node){
-      if (!gameState || !gameState.currentPlayer) { return; }
+      if (!state || !state.currentPlayer) { return false; }
 if(!node) return false;
     const c = state.currentPlayer;
     if(node.kind === "board"){
@@ -1297,7 +1297,7 @@ if(!node) return false;
   }
 
   function onPointerDown(ev){
-      if (!gameState) { return; }
+      if (!state) { return; }
 canvas.setPointerCapture(ev.pointerId);
     const sp=pointerPos(ev);
     // double-tap (or double-click) to auto-fit board (tablet safe)
