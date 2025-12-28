@@ -33,7 +33,9 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   const hostTools = $("hostTools");
   const saveBtn = $("saveBtn");
   const loadBtn = $("loadBtn");
+  const restoreBtn = $("restoreBtn");
   const loadFile = $("loadFile");
+  const autoSaveInfo = $("autoSaveInfo");
   const diceEl  = $("diceCube");
   const turnText= $("turnText");
   const turnDot = $("turnDot");
@@ -183,6 +185,42 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   let reconnectAttempt=0;
   let pendingIntents=[];
 
+  // ===== Host Auto-Save (Browser) =====
+  // Robust against Render sleep/restart: host stores last server snapshot in localStorage.
+  function autosaveKey(){
+    const rc = roomCode || (roomCodeInp ? normalizeRoomCode(roomCodeInp.value) : "");
+    return `barikade_host_autosave_${rc || "room"}`;
+  }
+  function setAutoSaveInfo(text){
+    if(!autoSaveInfo) return;
+    autoSaveInfo.style.display = text ? "block" : "none";
+    autoSaveInfo.textContent = text ? `Auto‑Save: ${text}` : "";
+  }
+  function writeHostAutosave(serverState){
+    // only host writes autosave
+    if(netMode === "offline" || !isMeHost()) return;
+    if(!serverState || typeof serverState !== "object") return;
+    try{
+      const payload = { room: roomCode || "", ts: Date.now(), state: serverState };
+      localStorage.setItem(autosaveKey(), JSON.stringify(payload));
+      const t = new Date(payload.ts);
+      const hh = String(t.getHours()).padStart(2,'0');
+      const mm = String(t.getMinutes()).padStart(2,'0');
+      const ss = String(t.getSeconds()).padStart(2,'0');
+      setAutoSaveInfo(`${hh}:${mm}:${ss}`);
+    }catch(_e){ /* ignore */ }
+  }
+  function readHostAutosave(){
+    try{
+      const raw = localStorage.getItem(autosaveKey());
+      if(!raw) return null;
+      const v = JSON.parse(raw);
+      if(!v || typeof v !== "object") return null;
+      if(!v.state || typeof v.state !== "object") return null;
+      return v;
+    }catch(_e){ return null; }
+  }
+
   function randId(len=10){
     const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let s=""; for(let i=0;i<len;i++) s += chars[Math.floor(Math.random()*chars.length)];
@@ -276,6 +314,12 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   function updateHostToolsUI(){
     const show = (netMode !== "offline") && isMeHost();
     if(hostTools) hostTools.style.display = show ? "flex" : "none";
+    if(autoSaveInfo) autoSaveInfo.style.display = show ? "block" : "none";
+    if(restoreBtn){
+      const has = !!readHostAutosave();
+      restoreBtn.disabled = !(show && has);
+      restoreBtn.style.opacity = (show && has) ? "1" : "0.6";
+    }
   }
 
   function scheduleReconnect(){
@@ -332,21 +376,30 @@ try{ ws = new WebSocket(SERVER_URL); }
         return;
       }
       if(type==="snapshot" || type==="started" || type==="place_barricade"){
-        if(msg.state) applyRemoteState(msg.state);
+        if(msg.state){
+          applyRemoteState(msg.state);
+          writeHostAutosave(msg.state);
+        }
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
         return;
       }
       if(type==="roll"){
         // (108/26) small suspense + particles
         if(typeof msg.value==="number") setDiceFaceAnimated(msg.value);
-        if(msg.state) applyRemoteState(msg.state);
+        if(msg.state){
+          applyRemoteState(msg.state);
+          writeHostAutosave(msg.state);
+        }
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
         return;
       }
       if(type==="move"){
         // (7/8/109) animate path + destination glow
         if(msg.action) queueMoveFx(msg.action);
-        if(msg.state) applyRemoteState(msg.state);
+        if(msg.state){
+          applyRemoteState(msg.state);
+          writeHostAutosave(msg.state);
+        }
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
         return;
       }
@@ -376,7 +429,13 @@ try{ ws = new WebSocket(SERVER_URL); }
           }
           pendingSaveExport = false;
           // UI-Hinweis statt Reset:
-          showNetBanner("Kein Spielstand am Server. Nutze Load (JSON) oder starte neu.");
+          const hasAuto = !!readHostAutosave();
+          if(isMeHost() && hasAuto){
+            showNetBanner("Server war offline/sleep (kein Spielstand). Klicke als Host auf \"Restore\" (Auto‑Save) oder \"Load\" (JSON).");
+          }else{
+            showNetBanner("Kein Spielstand am Server. Nutze Load (JSON) oder starte neu.");
+          }
+          updateHostToolsUI();
           return;
         }
         toast(message);
@@ -1549,6 +1608,21 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
     wsSend({ type:"import_state", state: st, ts: Date.now() });
     toast("Load gesendet…");
+  });
+
+  // Host tool: Restore last Auto-Save from browser (useful after server sleep/restart on Render)
+  if(restoreBtn) restoreBtn.addEventListener("click", () => {
+    if(!isMeHost()) { toast("Nur Host"); return; }
+    const v = readHostAutosave();
+    if(!v || !v.state){ toast("Kein Auto‑Save gefunden"); return; }
+    if(!ws || ws.readyState!==1){
+      // even if offline, allow downloading the autosave so nothing is lost
+      const ok = downloadJSON(v.state, `barikade_restore_offline_${roomCode || "room"}.json`);
+      toast(ok ? "Nicht verbunden – Restore als Datei gespeichert" : "Restore fehlgeschlagen");
+      return;
+    }
+    wsSend({ type:"import_state", state: v.state, ts: Date.now(), reason:"host_autosave_restore" });
+    toast("Auto‑Save wiederherstellen…");
   });
 
   // Color pick
