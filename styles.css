@@ -502,3 +502,29 @@ input:focus{border-color: rgba(77,163,255,.55); box-shadow: 0 0 0 2px rgba(77,16
   0%{ transform: translate(0,0) scale(1); opacity: 1; }
   100%{ transform: translate(var(--dx), var(--dy)) scale(0.4); opacity: 0; }
 }
+
+
+.jokerLobbyBox{
+  margin-top:10px;
+  padding:10px;
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:12px;
+  background:rgba(255,255,255,.03);
+}
+.jokerCountButtons{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:8px;
+}
+.jokerCountBtn{
+  min-width:52px;
+  font-weight:800;
+}
+.jokerCountBtn.active{
+  outline:2px solid rgba(255,255,255,.22);
+  transform:translateY(-1px);
+}
+.jokerCountBtn:disabled{
+  opacity:.55;
+}
