@@ -65,6 +65,8 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   const netStatus = $("netStatus");
   const netPlayersEl = $("netPlayers");
   const myColorEl = $("myColor");
+  const jokerCountInfo = $("jokerCountInfo");
+  const jokerCountButtons = Array.from(document.querySelectorAll(".jokerCountBtn"));
 
   // Color picker
   const colorPickWrap = $("colorPick");
@@ -174,6 +176,7 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
     lastDiceFace = 0;
     if(diceEl) diceEl.setAttribute('data-face','0');
     updateStartButton();
+    renderLobbyJokerCount();
     draw();
   }
 
@@ -221,6 +224,7 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
   let lastNetPlayers=[];
   let rosterById=new Map();
   let myColor=null;
+  let lobbyJokerCount=null;
 
   let reconnectTimer=null;
   let reconnectAttempt=0;
@@ -283,6 +287,41 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
     try{ ws.send(JSON.stringify(obj)); return true; }catch(_e){ return false; }
   }
 
+  function setJokerButtonsDisabled(disabled){
+    for(const btn of jokerCountButtons){
+      btn.disabled = !!disabled;
+    }
+  }
+
+  function renderLobbyJokerCount(){
+    for(const btn of jokerCountButtons){
+      const val = Number(btn.dataset.count || 0);
+      btn.classList.toggle("active", lobbyJokerCount === val);
+    }
+    const hostReady = Number.isInteger(lobbyJokerCount) && lobbyJokerCount >= 1 && lobbyJokerCount <= 5;
+    if(jokerCountInfo){
+      if(netMode === "host"){
+        jokerCountInfo.textContent = hostReady
+          ? `Gewählt: ${lobbyJokerCount} Joker pro Sorte für alle Spieler.`
+          : "Bitte 1 bis 5 Joker wählen. Ohne Auswahl kein Spielstart.";
+      } else {
+        jokerCountInfo.textContent = hostReady
+          ? `Host hat ${lobbyJokerCount} Joker pro Sorte gewählt.`
+          : "Host hat noch keine Joker-Anzahl gewählt.";
+      }
+    }
+    setJokerButtonsDisabled(netMode !== "host" || !!(state && state.started));
+  }
+
+  function chooseLobbyJokerCount(count){
+    const n = Number(count);
+    if(netMode !== "host"){ toast("Nur Host kann die Joker-Anzahl wählen"); return; }
+    if(state && state.started){ toast("Spiel läuft bereits"); return; }
+    if(!Number.isInteger(n) || n < 1 || n > 5){ toast("Bitte 1 bis 5 wählen"); return; }
+    if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
+    wsSend({ type:"set_joker_start_count", count:n, ts:Date.now() });
+  }
+
   function setNetPlayers(list){
     lastNetPlayers = Array.isArray(list) ? list : [];
     rosterById = new Map();
@@ -342,8 +381,10 @@ let isAnimatingMove = false; // FIX: verhindert Klick-Crash nach Refactor
     const me = rosterById.get(clientId);
     const amHost = !!(me && me.isHost);
     const hasState = !!(state && state.started);
-    startBtn.disabled = !(amHost && netCanStart && !hasState);
+    const hasJokerChoice = Number.isInteger(lobbyJokerCount) && lobbyJokerCount >= 1 && lobbyJokerCount <= 5;
+    startBtn.disabled = !(amHost && netCanStart && !hasState && hasJokerChoice);
     startBtn.textContent = hasState ? 'Spiel läuft' : 'Spiel starten';
+    renderLobbyJokerCount();
   }
 
   function isMeHost(){
@@ -412,6 +453,7 @@ try{ ws = new WebSocket(SERVER_URL); }
       }
       if(type==="room_update"){
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
+        lobbyJokerCount = Number.isInteger(msg.jokerStartCount) ? msg.jokerStartCount : null;
         netCanStart = !!msg.canStart;
         updateStartButton();
         return;
@@ -419,9 +461,11 @@ try{ ws = new WebSocket(SERVER_URL); }
       if(type==="snapshot" || type==="started" || type==="place_barricade"){
         if(msg.state){
           applyRemoteState(msg.state);
+          if(Number.isInteger(msg.state.jokerStartCount)) lobbyJokerCount = msg.state.jokerStartCount;
           writeHostAutosave(msg.state);
         }
         if(Array.isArray(msg.players)) setNetPlayers(msg.players);
+        renderLobbyJokerCount();
         return;
       }
       if(type==="roll"){
@@ -1629,7 +1673,8 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
     if(!ws || ws.readyState!==1){ toast("Nicht verbunden"); return; }
     if(state && state.started){ toast("Spiel läuft bereits"); return; }
     if(!netCanStart){ toast("Mindestens 2 Spieler nötig"); return; }
-    wsSend({type:"start", ts:Date.now()});
+    if(!Number.isInteger(lobbyJokerCount)){ toast("Bitte zuerst 1 bis 5 Joker wählen"); return; }
+    wsSend({type:"start", mode:"action", jokerStartCount:lobbyJokerCount, ts:Date.now()});
   });
 
   // Host-only: unpause / continue after reconnect (server-side paused flag)
@@ -1780,6 +1825,10 @@ if(phase==="placing_barricade" && hit && hit.kind==="board"){
   if(btnPickBlue) btnPickBlue.addEventListener("click", ()=>chooseColor("blue"));
   if(btnPickGreen) btnPickGreen.addEventListener("click", ()=>chooseColor("green"));
   if(btnPickYellow) btnPickYellow.addEventListener("click", ()=>chooseColor("yellow"));
+  for(const btn of jokerCountButtons){
+    btn.addEventListener("click", ()=>chooseLobbyJokerCount(btn.dataset.count));
+  }
+  renderLobbyJokerCount();
 
   // ===== Host: intent processing =====
   function colorOf(id){
